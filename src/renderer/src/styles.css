@@ -1,0 +1,285 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--foreground);
+  --color-accent: var(--accent);
+  --color-border: var(--border);
+  --color-ring: var(--primary);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  --background: #171818;
+  --foreground: #eeede9;
+  --card: #1c1d1d;
+  --sidebar: #131414;
+  --muted-foreground: #a3a5a2;
+  --primary: #f2d3b1;
+  --primary-foreground: #30281f;
+  --secondary: #232525;
+  --accent: #292b2a;
+  --border: #303231;
+  --empty-glow: #252523;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --background: #faf9f6;
+    --foreground: #272925;
+    --card: #ffffff;
+    --sidebar: #f1f0ec;
+    --muted-foreground: #63665f;
+    --primary: #ecd1b0;
+    --primary-foreground: #30281f;
+    --secondary: #efeee9;
+    --accent: #e5e4df;
+    --border: #dcddd5;
+    --empty-glow: #f2eee7;
+  }
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  button,
+  a {
+    -webkit-app-region: no-drag;
+  }
+  button:not(:disabled),
+  a {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 4px;
+  }
+  ::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
+}
+
+@layer components {
+  .overlay-window,
+  .overlay-window body,
+  .overlay-window #root {
+    background: transparent;
+    overflow: hidden;
+  }
+  .overlay-window {
+    color-scheme: dark;
+    --background: #171818;
+    --foreground: #eeede9;
+    --card: #1c1d1d;
+    --muted-foreground: #a3a5a2;
+    --primary: #f2d3b1;
+    --primary-foreground: #30281f;
+    --secondary: #232525;
+    --border: #303231;
+  }
+  .overlay-surface {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    border: 1px solid #454744;
+    border-radius: 18px;
+    background: #171818;
+    overflow: hidden;
+    user-select: none;
+  }
+  .overlay-attention {
+    border-color: #b5863d;
+  }
+  .overlay-compact {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: 100%;
+    padding: 0 14px;
+  }
+  .overlay-icon-button {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--secondary);
+  }
+  .preview-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+  .preview-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .preview-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 55px;
+    padding: 9px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .preview-row:hover,
+  .preview-row-selected {
+    background: var(--secondary);
+  }
+  .preview-row-selected {
+    border-color: var(--primary);
+  }
+  .preview-inspector {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow-wrap: anywhere;
+  }
+  .dashboard-shell {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+  }
+  .titlebar-drag {
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 236px;
+    flex-shrink: 0;
+    background: var(--sidebar);
+    border-right: 1px solid var(--border);
+  }
+  .main-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 36px 32px;
+    outline: none;
+  }
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-radius: 10px;
+    padding: 11px 13px;
+    color: var(--muted-foreground);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    transition:
+      background-color 120ms,
+      color 120ms;
+  }
+  .nav-link:hover {
+    background: var(--secondary);
+    color: var(--foreground);
+  }
+  .nav-link-active {
+    background: var(--accent);
+    color: var(--foreground);
+  }
+  .buddy-mark {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 33px;
+    height: 33px;
+    border-radius: 12px;
+    background: var(--primary);
+  }
+  .buddy-mark span {
+    width: 4px;
+    height: 7px;
+    border-radius: 4px;
+    background: var(--primary-foreground);
+  }
+  .buddy-mark::after {
+    content: '';
+    position: absolute;
+    bottom: 7px;
+    width: 8px;
+    height: 3px;
+    border-bottom: 2px solid var(--primary-foreground);
+    border-radius: 50%;
+  }
+  .empty-stage {
+    padding: 52px 24px 38px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    text-align: center;
+    background: radial-gradient(ellipse at 50% 25%, var(--empty-glow), transparent 70%);
+  }
+  .skip-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 20;
+    transform: translateY(-150%);
+    border-radius: 8px;
+    padding: 8px 12px;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    font-size: 12px;
+  }
+  .skip-link:focus {
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted-foreground: var(--foreground);
+    --border: var(--foreground);
+  }
+}
+
+@media (max-width: 960px) {
+  .sidebar {
+    width: 208px;
+  }
+  .main-content {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+}

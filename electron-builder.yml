@@ -1,0 +1,27 @@
+appId: dev.buddy.desktop
+productName: Buddy
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - '!out/native/**'
+  - package.json
+  - '!**/*.md'
+  - '!docs/**'
+extraResources:
+  - from: out/native/buddy-display
+    to: native/buddy-display
+asar: true
+mac:
+  category: public.app-category.developer-tools
+  minimumSystemVersion: '13.0.0'
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  binaries:
+    - Contents/Resources/native/buddy-display
+  artifactName: '${productName}-${version}-${arch}.${ext}'
+dmg:
+  title: Buddy

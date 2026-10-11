@@ -1,0 +1,49 @@
+{
+  "name": "buddy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A quiet macOS companion for coding-agent sessions",
+  "author": "Aditya Singh",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
+  "scripts": {
+    "dev": "install-electron && npm run build:native && electron-vite dev",
+    "start": "install-electron && electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "format": "prettier --write src scripts electron.vite.config.ts electron-builder.yml components.json package.json tsconfig*.json",
+    "format:check": "prettier --check src scripts electron.vite.config.ts electron-builder.yml components.json package.json tsconfig*.json",
+    "build": "npm run typecheck && npm run build:native && electron-vite build",
+    "package:mac": "npm run build && electron-builder --mac --dir",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "build:native": "node scripts/build-native.mjs"
+  },
+  "dependencies": {
+    "@dicebear/core": "10.7.0",
+    "@dicebear/styles": "10.6.0",
+    "@radix-ui/react-slot": "1.2.4",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "0.562.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-router-dom": "7.14.1",
+    "tailwind-merge": "3.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.2.2",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "5.1.2",
+    "electron": "42.11.4",
+    "electron-builder": "26.17.0",
+    "electron-vite": "5.0.0",
+    "prettier": "3.7.4",
+    "tailwindcss": "4.2.2",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  }
+}
