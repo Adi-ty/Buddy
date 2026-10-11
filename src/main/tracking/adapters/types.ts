@@ -30,6 +30,7 @@ export interface HarnessAdapter {
   installMode: 'hooks' | 'plugin'
   pluginAsset?: string
   nameIndex?: { path(): string; idField: string; nameField: string }
+  nameStorage?: { kind: 'opencode-db' | 'claude-titles'; path(): string }
   hookEvents(): string[]
   mapEvent(p: Record<string, unknown>, ctx: EventContext): EventMapping | null
   displayName(identityOrdinal: number): string

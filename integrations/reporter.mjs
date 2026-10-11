@@ -24,7 +24,14 @@ export function metadata(value) {
   ]
   const output = { version: 1, id: randomUUID(), at: Date.now() }
   for (const field of fields) {
-    const text = value[field]
+    const raw = value[field]
+    const text =
+      field === 'title' && typeof raw === 'string'
+        ? raw
+            .replace(/[\u0000-\u001f]/g, ' ')
+            .trim()
+            .slice(0, 256)
+        : raw
     if (
       typeof text === 'string' &&
       text.length &&

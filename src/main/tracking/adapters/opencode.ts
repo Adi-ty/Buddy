@@ -20,6 +20,11 @@ export const opencode: HarnessAdapter = {
       development ? 'buddy-dev.js' : 'buddy.js',
     ),
   hookEvents: () => [],
+  nameStorage: {
+    kind: 'opencode-db',
+    path: () =>
+      join(process.env.XDG_DATA_HOME || join(homedir(), '.local/share'), 'opencode/opencode.db'),
+  },
   mapEvent(p, ctx) {
     let result: EventMapping
     switch (p.event) {

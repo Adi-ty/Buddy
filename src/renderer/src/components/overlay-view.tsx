@@ -1,13 +1,7 @@
 import { harnessFor } from '@/lib/harness'
 import { useEffect, useState } from 'react'
 import { ArrowUpRight, ChevronDown, ChevronUp } from 'lucide-react'
-import {
-  notchSignal,
-  prioritizeSessions,
-  sessionNotification,
-  signalRevision,
-  sessionLastTool,
-} from '@shared/sessions'
+import { notchSignal, sessionNotification, signalRevision, sessionLastTool } from '@shared/sessions'
 import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
 import { useSessionClock } from '@/lib/use-session-clock'
 import { SessionAvatar } from './session-avatar'
@@ -17,18 +11,30 @@ import { Button } from './ui/button'
 import { cn } from '@/lib/utils'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from './ui/notice'
+import { sessionFamilies } from '@shared/session-families'
+import { SubagentList } from './subagent-list'
+import type { BuddySnapshot } from '@shared/contracts'
 
 export function OverlayView() {
   const { snapshot, failed } = useBuddySnapshot()
-  const now = useSessionClock(snapshot?.sessions, snapshot?.overlay.expanded)
-  const { notice, setNotice } = useNotice()
-  const [selection, setSelection] = useState<string | null>(null)
   useEffect(() => {
     document.documentElement.classList.add('overlay-window')
     return () => document.documentElement.classList.remove('overlay-window')
   }, [])
-  if (!snapshot || failed) return null
-  const sessions = prioritizeSessions(snapshot.sessions, now)
+  return snapshot && !failed ? <OverlaySessions snapshot={snapshot} /> : null
+}
+
+export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
+  const now = useSessionClock(snapshot.sessions, snapshot.overlay.expanded)
+  const { notice, setNotice } = useNotice()
+  const [selection, setSelection] = useState<string | null>(null)
+  const families = sessionFamilies(
+    snapshot.sessions,
+    [...snapshot.sessions, ...snapshot.history],
+    now,
+  )
+  const sessions = families.map((family) => family.summary)
+  const subagents = snapshot.sessions.filter((session) => session.parentId).length
   if (!sessions.length) return null
   const attention = sessions.filter((session) => session.status === 'needs-attention')
   const signal = notchSignal(sessions, now)
@@ -53,20 +59,6 @@ export function OverlayView() {
         : working
           ? `${working} working`
           : 'All quiet'
-  const secondarySummary =
-    [
-      (attention.length || errors) && finished ? `${finished} finished` : null,
-      working ? `${working} working` : null,
-    ]
-      .filter(Boolean)
-      .join(' · ') ||
-    (attention.length
-      ? 'Waiting for you'
-      : errors
-        ? 'Check your agent'
-        : finished
-          ? 'Turn finished'
-          : 'All quiet')
   const signalColor =
     signal === 'attention'
       ? 'text-attention'
@@ -90,6 +82,7 @@ export function OverlayView() {
             <div>
               <h1 className="text-sm font-semibold">
                 {sessions.length} {sessions.length === 1 ? 'session' : 'sessions'}
+                {subagents > 0 && ` · ${subagents} ${subagents === 1 ? 'subagent' : 'subagents'}`}
               </h1>
               <p className={cn('mt-0.5 text-[11px]', signalColor)}>{summary}</p>
             </div>
@@ -104,53 +97,72 @@ export function OverlayView() {
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             <div className="space-y-2">
-              {sessions.map((session) => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  harness={harnessFor(snapshot, session.harness)}
-                  selected={session.id === selection}
-                  compact
-                  now={now}
-                  onSelect={() => setSelection(session.id === selection ? null : session.id)}
-                >
-                  {session.id === selection && (
-                    <>
-                      <p className="break-all text-muted-foreground">
-                        {session.cwd ?? session.project}
-                      </p>
-                      <p className="mt-1.5">
-                        {session.attention.length
-                          ? 'Respond in your agent’s window.'
-                          : sessionLastTool(session)
-                            ? `Last tool: ${sessionLastTool(session)}`
-                            : 'No tool activity yet'}
-                      </p>
-                      {session.status === 'working' && (
-                        <p className="mt-1.5 text-muted-foreground">
-                          Working observed{' '}
-                          {Math.max(0, Math.floor((now - session.statusChangedAt) / 1000))}s ago.{' '}
-                          {(() => {
-                            const activity = [...session.activity]
-                              .reverse()
-                              .find(
-                                (item) =>
-                                  ![
-                                    'buddy.reconcile',
-                                    'session.updated',
-                                    'session.created',
-                                  ].includes(item.event),
-                              )
-                            return activity?.tool
-                              ? `${activity.event === 'PreToolUse' ? 'Tool started' : 'Tool activity'}: ${activity.tool} · ${Math.max(0, Math.floor((now - activity.at) / 1000))}s ago.`
-                              : ''
-                          })()}
+              {families.map((family) => {
+                const session = family.root
+                const selected = [session, ...family.descendants].find(
+                  (item) => item.id === selection,
+                )
+                return (
+                  <SessionRow
+                    key={session.id}
+                    session={session}
+                    harness={harnessFor(snapshot, session.harness)}
+                    selected={Boolean(selected)}
+                    summary={family.summary}
+                    subagentCount={family.descendants.length}
+                    compact
+                    now={now}
+                    onSelect={() => setSelection(session.id === selection ? null : session.id)}
+                  >
+                    {selected && (
+                      <>
+                        <SubagentList
+                          root={session}
+                          sessions={family.descendants}
+                          snapshot={snapshot}
+                          selectedId={selection}
+                          onSelect={setSelection}
+                          now={now}
+                        />
+                        <p className="mt-2 truncate font-medium" title={selected.name}>
+                          {selected.name}
                         </p>
-                      )}
-                    </>
-                  )}
-                </SessionRow>
-              ))}
+                        <p className="break-all text-muted-foreground">
+                          {selected.cwd ?? selected.project}
+                        </p>
+                        <p className="mt-1.5">
+                          {selected.attention.length
+                            ? 'Respond in your agent’s window.'
+                            : sessionLastTool(selected)
+                              ? `Last tool: ${sessionLastTool(selected)}`
+                              : 'No tool activity yet'}
+                        </p>
+                        {selected.status === 'working' && (
+                          <p className="mt-1.5 text-muted-foreground">
+                            Working observed{' '}
+                            {Math.max(0, Math.floor((now - selected.statusChangedAt) / 1000))}s ago.{' '}
+                            {(() => {
+                              const activity = [...selected.activity]
+                                .reverse()
+                                .find(
+                                  (item) =>
+                                    ![
+                                      'buddy.reconcile',
+                                      'session.updated',
+                                      'session.created',
+                                    ].includes(item.event),
+                                )
+                              return activity?.tool
+                                ? `${activity.event === 'PreToolUse' ? 'Tool started' : 'Tool activity'}: ${activity.tool} · ${Math.max(0, Math.floor((now - activity.at) / 1000))}s ago.`
+                                : ''
+                            })()}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </SessionRow>
+                )
+              })}
             </div>
           </div>
           <footer className="flex h-11 shrink-0 items-center justify-between gap-2 border-t border-border px-3">
@@ -201,18 +213,17 @@ export function OverlayView() {
               <span className="pl-3 text-xs text-muted-foreground">+{sessions.length - 5}</span>
             )}
           </span>
-          <span className="ml-auto text-right text-[11px]">
-            <span className={cn('block font-medium', signalColor)}>
-              {attention.length
-                ? `${attention.length} need you`
-                : errors
-                  ? `${errors} ${errors === 1 ? 'error' : 'errors'}`
-                  : finished
-                    ? `${finished} finished`
-                    : `${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}`}
+          <span className="ml-auto min-w-0 text-right text-[11px]">
+            <span
+              className={cn('block truncate font-medium', signalColor)}
+              title={families[0]!.root.name}
+            >
+              {families[0]!.root.name}
             </span>
-            <span className="mt-0.5 block text-[10px] text-muted-foreground">
-              {secondarySummary}
+            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+              {harnessFor(snapshot, families[0]!.root.harness).name} ·{' '}
+              {sessions.length > 1 ? `${sessions.length} sessions · ` : ''}
+              {summary}
             </span>
           </span>
           <ChevronDown size={13} className="shrink-0 text-muted-foreground" />

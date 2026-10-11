@@ -108,7 +108,7 @@ export interface BuddySnapshot {
   history: readonly SessionRecord[]
   tracking: {
     available: boolean
-    phase: 'starting' | 'running' | 'unavailable'
+    phase: 'starting' | 'running' | 'paused' | 'unavailable'
     message: string | null
     droppedObservations?: number
     capacityEvictions?: number

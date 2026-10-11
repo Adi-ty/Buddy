@@ -6,6 +6,8 @@ const configPath = '__BUDDY_BRIDGE_CONFIG__'
 export default async function BuddyPlugin({ client, directory }) {
   const known = new Map()
   const active = new Set()
+  const metadataLoaded = new Map()
+  const metadataPending = new Map()
   const generations = new Map()
   const deleted = new Set()
   let disposed = false
@@ -20,7 +22,7 @@ export default async function BuddyPlugin({ client, directory }) {
       known.set(sessionId, {
         ...known.get(sessionId),
         cwd: info.directory ?? directory,
-        parentId: info.parentID,
+        ...(typeof info.parentID === 'string' ? { parentId: info.parentID } : {}),
         ...(typeof info.title === 'string' ? { title: info.title } : {}),
       })
     if (!['session.created', 'session.updated', 'session.deleted'].includes(event))
@@ -38,6 +40,68 @@ export default async function BuddyPlugin({ client, directory }) {
       requestId: event.endsWith('asked') ? p.id : (p.requestID ?? p.permissionID),
       ...extra,
     })
+  }
+  // Recover names and ancestry from this plugin's SDK authority. Ancestor
+  // metadata never establishes that a parent is open or taking a turn.
+  const recoverMetadata = async (id, signal, publish = false, ancestors = new Set()) => {
+    if (
+      disposed ||
+      deleted.has(id) ||
+      ancestors.has(id) ||
+      ancestors.size >= 8 ||
+      typeof client.session.get !== 'function'
+    )
+      return
+    ancestors.add(id)
+    if (!metadataLoaded.has(id) || Date.now() - metadataLoaded.get(id) >= 30_000) {
+      let pending = metadataPending.get(id)
+      if (!pending) {
+        if (metadataPending.size >= 32) return
+        pending = (async () => {
+          try {
+            const before = known.get(id)
+            const response = await client.session.get({
+              path: { id },
+              query: { directory },
+              signal,
+            })
+            if (disposed || deleted.has(id) || response.data?.id !== id) return
+            const info = response.data
+            const current = known.get(id)
+            known.set(id, {
+              ...current,
+              cwd: info.directory ?? directory,
+              ...(typeof info.parentID === 'string' ? { parentId: info.parentID } : {}),
+              ...(typeof info.title === 'string' ? { title: info.title } : {}),
+              ...(current?.title !== before?.title ? { title: current?.title } : {}),
+              ...(current?.parentId !== before?.parentId ? { parentId: current?.parentId } : {}),
+              ...(current?.cwd !== before?.cwd ? { cwd: current?.cwd } : {}),
+            })
+            metadataLoaded.set(id, Date.now())
+          } catch {
+            /* Disconnected metadata keeps the honest fallback label. */
+          }
+        })()
+        metadataPending.set(id, pending)
+      }
+      await pending
+      if (metadataPending.get(id) === pending) metadataPending.delete(id)
+    }
+    if (disposed || deleted.has(id)) return
+    const parent = known.get(id)?.parentId
+    if (typeof parent === 'string' && parent !== id && !ancestors.has(parent))
+      await recoverMetadata(parent, signal, true, ancestors)
+    if (publish && metadataLoaded.has(id) && !disposed && !deleted.has(id))
+      send('session.updated', { sessionID: id })
+  }
+  const recoverLiveMetadata = async (id) => {
+    const controller = new AbortController()
+    const deadline = setTimeout(() => controller.abort(), 1000)
+    try {
+      await recoverMetadata(id, controller.signal, true)
+    } finally {
+      clearTimeout(deadline)
+    }
   }
   // Query this plugin's own SDK authority only. status() lists active turns;
   // list() conversations alone never establishes an open/active session.
@@ -86,35 +150,12 @@ export default async function BuddyPlugin({ client, directory }) {
         ])
         // A plugin may attach after session.updated. Recover title metadata
         // only for already observed/working sessions, never import disk history.
-        if (typeof client.session.get === 'function')
-          await Promise.all(
-            [...sessions]
-              .filter((id) => !known.get(id)?.title)
-              .filter((id) => !deleted.has(id))
-              .slice(0, 32)
-              .map(async (id) => {
-                try {
-                  const response = await client.session.get({
-                    path: { id },
-                    query: { directory },
-                    signal: controller.signal,
-                  })
-                  if (
-                    !disposed &&
-                    !deleted.has(id) &&
-                    response.data?.id === id &&
-                    !known.get(id)?.title
-                  )
-                    known.set(id, {
-                      cwd: response.data.directory ?? directory,
-                      parentId: response.data.parentID,
-                      title: response.data.title,
-                    })
-                } catch {
-                  // Unsupported or disconnected sources keep their fallback name.
-                }
-              }),
-          )
+        await Promise.all(
+          [...sessions]
+            .filter((id) => !deleted.has(id))
+            .slice(0, 32)
+            .map((id) => recoverMetadata(id, controller.signal)),
+        )
         for (const sessionId of sessions) {
           if (disposed) break
           if (deleted.has(sessionId)) continue
@@ -183,7 +224,14 @@ export default async function BuddyPlugin({ client, directory }) {
           const id = event.properties?.sessionID ?? event.properties?.info?.id
           known.delete(id)
           active.delete(id)
+          metadataLoaded.delete(id)
         }
+        if (
+          typeof sessionId === 'string' &&
+          event.type !== 'session.deleted' &&
+          !metadataLoaded.has(sessionId)
+        )
+          void recoverLiveMetadata(sessionId)
         if (
           [
             'permission.replied',

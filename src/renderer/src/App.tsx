@@ -15,6 +15,7 @@ import { NotchSettings } from '@/components/notch-settings'
 import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from '@/components/ui/notice'
+import { sessionFamilies } from '@shared/session-families'
 
 const navigation = [
   { path: '/sessions', label: 'Sessions', icon: Layers3 },
@@ -118,22 +119,28 @@ function Dashboard() {
                 className={
                   snapshot.tracking.available
                     ? 'fill-success text-success'
-                    : 'text-muted-foreground'
+                    : snapshot.tracking.phase === 'starting' || snapshot.tracking.phase === 'paused'
+                      ? 'fill-attention text-attention'
+                      : 'text-muted-foreground'
                 }
                 aria-hidden="true"
               />{' '}
               {snapshot.tracking.phase === 'starting'
                 ? 'Starting local observation…'
-                : snapshot.tracking.available
-                  ? 'Tracking running'
-                  : 'Tracking unavailable'}
+                : snapshot.tracking.phase === 'paused'
+                  ? 'Observation paused'
+                  : snapshot.tracking.available
+                    ? 'Tracking running'
+                    : 'Tracking unavailable'}
             </div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               {snapshot.tracking.phase === 'starting'
                 ? 'Preparing local session observation.'
-                : snapshot.tracking.available
-                  ? 'Buddy continues observing when this window is closed.'
-                  : 'Tracking is unavailable. Check Integrations.'}
+                : snapshot.tracking.phase === 'paused'
+                  ? 'Storage is unavailable. Buddy will retry; current session states are unknown.'
+                  : snapshot.tracking.available
+                    ? 'Buddy continues observing when this window is closed.'
+                    : 'Tracking is unavailable. Check Integrations.'}
             </p>
           </div>
           <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground">
@@ -160,10 +167,13 @@ function Dashboard() {
 function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const navigate = useNavigate()
   const connected = snapshot.harnesses.filter((item) => item.observer === 'installed')
-  const finished = snapshot.sessions.filter((item) => item.status === 'completed').length
-  const errors = snapshot.sessions.filter((item) => item.status === 'error').length
-  const working = snapshot.sessions.filter((item) => item.status === 'working').length
-  const attention = snapshot.sessions.filter((item) => item.status === 'needs-attention').length
+  const families = sessionFamilies(snapshot.sessions, [...snapshot.sessions, ...snapshot.history])
+  const sessions = families.map((family) => family.summary)
+  const subagents = snapshot.sessions.filter((session) => session.parentId).length
+  const finished = sessions.filter((item) => item.status === 'completed').length
+  const errors = sessions.filter((item) => item.status === 'error').length
+  const working = sessions.filter((item) => item.status === 'working').length
+  const attention = sessions.filter((item) => item.status === 'needs-attention').length
   return (
     <>
       <PageHeading
@@ -177,7 +187,10 @@ function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
       <Notice
         message={
           snapshot.tracking.message
-            ? { text: snapshot.tracking.message, error: snapshot.tracking.phase === 'unavailable' }
+            ? {
+                text: snapshot.tracking.message,
+                error: ['unavailable', 'paused'].includes(snapshot.tracking.phase),
+              }
             : null
         }
         className="mb-4"
@@ -185,7 +198,12 @@ function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
       {snapshot.sessions.length > 0 ? (
         <>
           <div className="mb-5 flex items-center gap-2">
-            <Badge variant="outline">{snapshot.sessions.length} observed</Badge>
+            <Badge variant="outline">{sessions.length} observed</Badge>
+            {subagents > 0 && (
+              <Badge variant="outline">
+                {subagents} {subagents === 1 ? 'subagent' : 'subagents'}
+              </Badge>
+            )}
             <Badge variant={working ? 'working' : 'outline'}>{working} working</Badge>
             <Badge variant={finished ? 'success' : 'outline'}>{finished} finished</Badge>
             {attention > 0 && <Badge variant="attention">{attention} need attention</Badge>}

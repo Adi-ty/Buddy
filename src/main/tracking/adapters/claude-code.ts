@@ -13,6 +13,10 @@ export const claudeCode: HarnessAdapter = {
   cli: { command: 'claude', extraPaths: [] },
   compat: { verified: '2.1.295' },
   target: () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json'),
+  nameStorage: {
+    kind: 'claude-titles',
+    path: () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'),
+  },
   hookEvents: () => [
     ...commonHookEvents,
     'Notification',

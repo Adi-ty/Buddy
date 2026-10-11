@@ -9,6 +9,7 @@ import { PageHeading } from './ui/page-heading'
 import { Notice } from './ui/notice'
 import { useNotice } from '@/lib/use-notice'
 import { useEffect } from 'react'
+import { relativeTime } from '@shared/session-families'
 
 export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const [pending, setPending] = useState<string | null>(null)
@@ -72,7 +73,10 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         message={
           notice ??
           (snapshot.tracking.message
-            ? { text: snapshot.tracking.message, error: snapshot.tracking.phase === 'unavailable' }
+            ? {
+                text: snapshot.tracking.message,
+                error: ['unavailable', 'paused'].includes(snapshot.tracking.phase),
+              }
             : null)
         }
       />
@@ -130,10 +134,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                   )}
                   {harness.lastEventAt !== undefined && (
                     <p className="mt-2 text-xs text-muted-foreground">
-                      Last event{' '}
-                      {Math.max(0, Math.floor((now - harness.lastEventAt) / 60_000)) < 1
-                        ? 'just now'
-                        : `${Math.floor((now - harness.lastEventAt) / 60_000)}m ago`}
+                      Last event {relativeTime(harness.lastEventAt, now)}
                     </p>
                   )}
                   {installed && (
@@ -150,7 +151,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                     </p>
                   )}
                   <div className="mt-4 flex gap-2">
-                    {!installed && (
+                    {!installed && !(harness.canInstallUnverified && !harness.canInstall) && (
                       <Button
                         size="sm"
                         disabled={pending !== null || !canInstall}

@@ -17,21 +17,24 @@ export class SessionNotifications {
     ) => new Notification(options),
   ) {}
 
+  private unmap(id: string): void {
+    const notice = this.live.get(id)
+    this.live.delete(id)
+    if (!notice || [...this.live.values()].includes(notice)) return
+    try {
+      notice.close()
+    } catch {
+      /* Native delivery is best effort. */
+    }
+  }
+
   observe(before: SessionRecord | null, after: SessionRecord | null, now = Date.now()): void {
     if (!this.enabled()) return this.reset()
     const id = after?.id ?? before?.id
     if (!id) return
     if (!after || after.presence !== 'observed' || after.status !== before?.status) {
       this.pending.delete(id)
-      const notice = this.live.get(id)
-      if (notice) {
-        try {
-          notice.close()
-        } catch {
-          /* Native delivery is best effort. */
-        }
-        for (const [other, item] of this.live) if (item === notice) this.live.delete(other)
-      }
+      this.unmap(id)
     }
     if (!after || after.presence !== 'observed' || after.status === before?.status) return
     if (after.status === 'error') {
@@ -97,15 +100,7 @@ export class SessionNotifications {
     for (const id of new Set([...this.pending.keys(), ...this.live.keys()])) {
       if (observed.has(id)) continue
       this.pending.delete(id)
-      const notice = this.live.get(id)
-      if (notice) {
-        try {
-          notice.close()
-        } catch {
-          /* Delivery may already be gone. */
-        }
-        for (const [other, item] of this.live) if (item === notice) this.live.delete(other)
-      }
+      this.unmap(id)
     }
   }
 

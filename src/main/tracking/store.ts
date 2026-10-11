@@ -51,7 +51,11 @@ export class SessionStore {
 
   constructor(
     private readonly path: string,
-    private readonly lookupName: (harness: HarnessId, id: string) => string | null = () => null,
+    private readonly lookupName: (
+      harness: HarnessId,
+      id: string,
+      cwd?: string | null,
+    ) => string | null = () => null,
     private readonly options: {
       flushDelayMs?: number
       onPersistenceError?: () => void
@@ -299,7 +303,7 @@ export class SessionStore {
       record.cwd = event.cwd
       record.project = basename(event.cwd) || event.cwd
     }
-    const name = event.name ?? this.lookupName(event.harness, event.sessionId)
+    const name = this.lookupName(event.harness, event.sessionId, record.cwd) ?? event.name
     if (name) {
       record.name = name
       record.nameSource = 'harness'
@@ -429,7 +433,7 @@ export class SessionStore {
     const next = new Map(this.records)
     let changed = false
     for (const [id, record] of next) {
-      const name = this.lookupName(record.harness, record.providerSessionId)
+      const name = this.lookupName(record.harness, record.providerSessionId, record.cwd)
       if (name && (name !== record.name || record.nameSource !== 'harness')) {
         next.set(id, { ...record, name, nameSource: 'harness' })
         changed = true

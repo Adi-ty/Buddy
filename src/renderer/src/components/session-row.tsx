@@ -15,6 +15,9 @@ export function SessionRow({
   children,
   now = Date.now(),
   tabIndex,
+  summary = session,
+  subagentCount = 0,
+  onFocus,
 }: {
   session: SessionRecord
   harness: HarnessCatalogEntry
@@ -24,20 +27,23 @@ export function SessionRow({
   children?: ReactNode
   now?: number
   tabIndex?: number
+  summary?: SessionRecord
+  subagentCount?: number
+  onFocus?: () => void
 }) {
-  const signal = sessionNotification(session, now)
-  const detail = sessionAttentionLabel(session)
-  const description = detail
-    ? `${session.project} · ${detail}`
-    : session.status === 'completed'
-      ? `${session.project} · Turn finished`
-      : session.status === 'error'
-        ? `${session.project} · Check your agent`
-        : session.project
+  const signal = sessionNotification(summary, now)
+  const detail = sessionAttentionLabel(summary)
+  const description =
+    detail ??
+    (summary.status === 'completed'
+      ? 'Turn finished'
+      : summary.status === 'error'
+        ? 'Check your agent'
+        : null)
   return (
     <SignalBoundary
       signal={signal}
-      revision={signalRevision([session], signal, now)}
+      revision={signalRevision([summary], signal, now)}
       className={cn('session-card', selected && 'session-card-selected')}
     >
       <button
@@ -46,6 +52,8 @@ export function SessionRow({
         aria-pressed={selected}
         aria-expanded={compact ? Boolean(children) : undefined}
         onClick={onSelect}
+        onFocus={onFocus}
+        data-session-id={session.id}
       >
         <SessionAvatar avatar={session} harness={harness} className="size-9" compactBadge />
         <span className="min-w-0 flex-1 text-left">
@@ -55,6 +63,11 @@ export function SessionRow({
             </span>
             {session.parentId && (
               <span className="text-[10px] text-muted-foreground">Subagent</span>
+            )}
+            {subagentCount > 0 && (
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                +{subagentCount} {subagentCount === 1 ? 'subagent' : 'subagents'}
+              </span>
             )}
           </span>
           <span
@@ -69,10 +82,12 @@ export function SessionRow({
                     : 'text-muted-foreground',
             )}
           >
-            {description}
+            {harness.name}
+            {description ? ` · ${description}` : ''}
+            {summary.status !== session.status && ' · Includes subagent activity'}
           </span>
         </span>
-        <SessionStatus status={session.status} compact={compact} />
+        <SessionStatus status={summary.status} compact={compact} />
       </button>
       {children && <div className="session-row-details">{children}</div>}
     </SignalBoundary>

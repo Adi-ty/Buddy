@@ -1,8 +1,8 @@
 import { harnessFor } from '@/lib/harness'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import type { BuddySnapshot, SessionRecord } from '@shared/contracts'
 import { SessionAvatar } from './session-avatar'
-import { prioritizeSessions, sessionStatusLabels } from '@shared/sessions'
+import { sessionStatusLabels } from '@shared/sessions'
 import { SessionRow } from './session-row'
 import { Select } from './ui/select'
 import { Button } from './ui/button'
@@ -11,19 +11,12 @@ import { useSessionFilters } from '@/lib/session-filters'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from './ui/notice'
 import type { SessionAction } from '@shared/contracts'
+import { sessionFamilies, relativeTime } from '@shared/session-families'
+import { SubagentList } from './subagent-list'
+import { sessionPage, nextSessionRow } from '@/lib/session-list-view'
 
 const labels = sessionStatusLabels
 const projectKey = (session: SessionRecord): string => session.cwd ?? `project:${session.project}`
-const ago = (at: number, now: number): string => {
-  const seconds = Math.max(0, Math.floor((now - at) / 1000))
-  return seconds < 60
-    ? 'Just now'
-    : seconds < 3600
-      ? `${Math.floor(seconds / 60)}m ago`
-      : seconds < 86400
-        ? `${Math.floor(seconds / 3600)}h ago`
-        : `${Math.floor(seconds / 86400)}d ago`
-}
 
 export function SessionList({
   snapshot,
@@ -37,10 +30,21 @@ export function SessionList({
   const { harness, project, status, recent, groupBy, sort, search } = filters
   const { notice, setNotice, reportError } = useNotice()
   const [pending, setPending] = useState(false)
-  const records = history
-    ? [...snapshot.history].sort((a, b) => b.lastSeen - a.lastSeen)
-    : prioritizeSessions(snapshot.sessions, signalNow)
-  if (sort === 'recent') records.sort((a, b) => b.lastSeen - a.lastSeen || a.ordinal - b.ordinal)
+  const context = [...snapshot.sessions, ...snapshot.history]
+  const families = sessionFamilies(
+    history ? snapshot.history : snapshot.sessions,
+    context,
+    signalNow,
+  )
+  if (history || sort === 'recent')
+    families.sort(
+      (a, b) => b.summary.lastSeen - a.summary.lastSeen || a.root.ordinal - b.root.ordinal,
+    )
+  const familyById = new Map(families.map((family) => [family.root.id, family]))
+  const records = families.map((family) => family.summary)
+  const listRef = useRef<HTMLDivElement>(null)
+  const pendingFocus = useRef<string | null>(null)
+  const [focusId, setFocusId] = useState<string | null>(null)
   const [selection, setSelection] = useState<string | null>(
     () => records.find((item) => item.status === 'needs-attention')?.id ?? null,
   )
@@ -51,48 +55,74 @@ export function SessionList({
     const timer = setInterval(() => setNow(Date.now()), 15_000)
     return () => clearInterval(timer)
   }, [])
-  const sessions = records.filter(
-    (item) =>
-      (harness === 'all' || item.harness === harness) &&
-      (project === 'all' || projectKey(item) === project) &&
-      (status === 'all' || item.status === status) &&
-      (!search.trim() ||
-        [item.name, item.project, item.cwd].some((value) =>
-          value?.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
-        )) &&
-      (recent === 'all' || now - item.lastSeen < Number(recent)),
+  const matches = (item: SessionRecord) =>
+    (harness === 'all' || item.harness === harness) &&
+    (project === 'all' || projectKey(item) === project) &&
+    (status === 'all' || item.status === status) &&
+    (!search.trim() ||
+      [item.name, item.project, item.cwd].some((value) =>
+        value?.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+      )) &&
+    (recent === 'all' || now - item.lastSeen < Number(recent))
+  const matched = families
+    .filter((family) => [family.summary, ...family.members].some(matches))
+    .map((family) => family.summary)
+  const {
+    ordered: sessions,
+    pages,
+    page: currentPage,
+    visible,
+    groups,
+  } = sessionPage(
+    matched,
+    (item) => {
+      const key =
+        groupBy === 'harness'
+          ? harnessFor(snapshot, item.harness).name
+          : groupBy === 'project'
+            ? projectKey(item)
+            : groupBy === 'status'
+              ? labels[item.status]
+              : history
+                ? new Date(item.lastSeen).toDateString()
+                : ''
+      const label =
+        groupBy === 'project'
+          ? (item.cwd ?? item.project)
+          : history && groupBy === 'none'
+            ? new Date(item.lastSeen).toLocaleDateString(undefined, { dateStyle: 'medium' })
+            : key
+      return { key, label }
+    },
+    page,
   )
-  const pages = Math.max(1, Math.ceil(sessions.length / 10))
-  const currentPage = Math.min(page, pages - 1)
-  const visible = sessions.slice(currentPage * 10, (currentPage + 1) * 10)
-  const selected = visible.find((item) => item.id === selection) ?? visible[0]
+  const selectedFamily =
+    families.find(
+      (family) =>
+        sessions.some((row) => row.id === family.root.id) &&
+        [family.root, ...family.descendants].some((item) => item.id === selection),
+    ) ?? families.find((family) => family.root.id === visible[0]?.id)
+  const selected = selectedFamily
+    ? ([selectedFamily.root, ...selectedFamily.descendants].find((item) => item.id === selection) ??
+      selectedFamily.root)
+    : undefined
+  useEffect(() => {
+    if (!pendingFocus.current) return
+    const row = [
+      ...(listRef.current?.querySelectorAll<HTMLButtonElement>('button.session-row') ?? []),
+    ].find((item) => item.dataset.sessionId === pendingFocus.current)
+    if (row) {
+      pendingFocus.current = null
+      row.focus()
+    }
+  }, [currentPage, focusId])
   const filtered = [harness, project, status, recent].some((filter) => filter !== 'all') || !!search
   const projects = new Map(
-    records.map((record) => [
+    (history ? snapshot.history : snapshot.sessions).map((record) => [
       projectKey(record),
       { label: record.project, path: record.cwd ?? record.project },
     ]),
   )
-  const groups = new Map<string, { label: string; items: SessionRecord[] }>()
-  for (const item of visible) {
-    const key =
-      groupBy === 'harness'
-        ? harnessFor(snapshot, item.harness).name
-        : groupBy === 'project'
-          ? projectKey(item)
-          : groupBy === 'status'
-            ? labels[item.status]
-            : history
-              ? new Date(item.lastSeen).toDateString()
-              : ''
-    const label =
-      groupBy === 'project'
-        ? (item.cwd ?? item.project)
-        : history && groupBy === 'none'
-          ? new Date(item.lastSeen).toLocaleDateString(undefined, { dateStyle: 'medium' })
-          : key
-    groups.set(key, { label, items: [...(groups.get(key)?.items ?? []), item] })
-  }
   const avatar = (item: SessionRecord) => (
     <SessionAvatar
       avatar={item}
@@ -239,32 +269,35 @@ export function SessionList({
         aria-atomic="true"
       >
         {sessions.length} of {records.length} {history ? 'past' : 'observed'} sessions
+        {(history ? snapshot.history : snapshot.sessions).some((item) => item.parentId) &&
+          ` · ${(history ? snapshot.history : snapshot.sessions).filter((item) => item.parentId).length} subagents`}
       </p>
       <div className="session-layout">
         <div
           className="min-w-0"
+          ref={listRef}
           onKeyDown={(event) => {
             if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
             const row = (event.target as HTMLElement).closest<HTMLButtonElement>(
               'button.session-row',
             )
             if (!row) return
-            const rows = [
-              ...event.currentTarget.querySelectorAll<HTMLButtonElement>('button.session-row'),
-            ]
-            const index = rows.indexOf(row)
-            const next =
-              event.key === 'Home'
-                ? 0
-                : event.key === 'End'
-                  ? rows.length - 1
-                  : Math.max(
-                      0,
-                      Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)),
-                    )
+            const isChild = !sessions.some((item) => item.id === row.dataset.sessionId)
+            if (isChild) return
+            const next = nextSessionRow(sessions, row.dataset.sessionId ?? '', event.key)
+            if (!next) return
             event.preventDefault()
-            rows[next]?.click()
-            rows[next]?.focus()
+            pendingFocus.current = next.id
+            setFocusId(next.id)
+            setPage(Math.floor(sessions.findIndex((item) => item.id === next.id) / 10))
+            // Focus movement does not activate the row. Enter/Space selects it.
+            const button = [
+              ...event.currentTarget.querySelectorAll<HTMLButtonElement>('button.session-row'),
+            ].find((item) => item.dataset.sessionId === next.id)
+            if (button) {
+              pendingFocus.current = null
+              button.focus()
+            }
           }}
         >
           {!sessions.length && (
@@ -284,17 +317,43 @@ export function SessionList({
                 </h3>
               )}
               <div className="session-list">
-                {items.map((item) => (
-                  <SessionRow
-                    key={item.id}
-                    session={item}
-                    harness={harnessFor(snapshot, item.harness)}
-                    selected={item.id === selected?.id}
-                    tabIndex={item.id === selected?.id ? 0 : -1}
-                    onSelect={() => setSelection(item.id)}
-                    now={signalNow}
-                  />
-                ))}
+                {items.map((item) => {
+                  const family = familyById.get(item.id)!
+                  return (
+                    <SessionRow
+                      key={item.id}
+                      session={family.root}
+                      summary={item}
+                      subagentCount={family.descendants.length}
+                      harness={harnessFor(snapshot, item.harness)}
+                      selected={item.id === selectedFamily?.root.id}
+                      tabIndex={
+                        item.id ===
+                        (visible.some((row) => row.id === focusId)
+                          ? focusId
+                          : visible.some((row) => row.id === selectedFamily?.root.id)
+                            ? selectedFamily?.root.id
+                            : visible[0]?.id)
+                          ? 0
+                          : -1
+                      }
+                      onFocus={() => setFocusId(item.id)}
+                      onSelect={() => setSelection(item.id)}
+                      now={signalNow}
+                    >
+                      {item.id === selectedFamily?.root.id && (
+                        <SubagentList
+                          root={selectedFamily.root}
+                          sessions={selectedFamily.descendants}
+                          snapshot={snapshot}
+                          selectedId={selection}
+                          onSelect={setSelection}
+                          now={signalNow}
+                        />
+                      )}
+                    </SessionRow>
+                  )
+                })}
               </div>
             </div>
           ))}
@@ -363,7 +422,7 @@ export function SessionList({
                 ? 'No recent activity — current state unknown'
                 : selected.presence === 'closed'
                   ? 'Session ended'
-                  : `Last activity ${ago(selected.lastSeen, now)}`}
+                  : `Last activity ${relativeTime(selected.lastSeen, now)}`}
             </p>
             {selected.attention.length > 0 && (
               <div className="mt-4 rounded-lg bg-attention/10 p-3 text-xs">

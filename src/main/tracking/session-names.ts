@@ -2,17 +2,24 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import type { HarnessId } from '../../shared/contracts'
 import { textField } from './events'
 import { HARNESSES } from './adapters'
+import { displayTitle, TitleStorage } from './title-storage'
 
 // Codex's title-only index is optional metadata, never evidence of a live
 // session. Read a bounded tail and ignore partial lines; no transcript access.
 export class SessionNames {
   private stamp = ''
   private titles = new Map<string, string>()
+  private storage = new TitleStorage()
 
   constructor(private readonly indexOverride?: string) {}
 
-  lookup(harness: HarnessId, sessionId: string): string | null {
-    const index = HARNESSES.find((entry) => entry.id === harness)?.nameIndex
+  lookup(harness: HarnessId, sessionId: string, cwd?: string | null): string | null {
+    const adapter = HARNESSES.find((entry) => entry.id === harness)
+    const storage = adapter?.nameStorage
+    if (storage?.kind === 'opencode-db') return this.storage.opencode(storage.path(), sessionId)
+    if (storage?.kind === 'claude-titles')
+      return this.storage.claude(storage.path(), sessionId, cwd)
+    const index = adapter?.nameIndex
     if (!index) return null
     const indexPath = this.indexOverride ?? index.path()
     let fd: number | undefined
@@ -32,7 +39,7 @@ export class SessionNames {
           try {
             const entry = JSON.parse(line) as Record<string, unknown>
             const id = textField(entry?.[index.idField], 128)
-            const title = textField(entry?.[index.nameField])
+            const title = displayTitle(entry?.[index.nameField])
             if (id && title?.trim()) titles.set(id, title.trim())
           } catch {
             // An in-progress append or unsupported index entry is harmless.
@@ -47,5 +54,9 @@ export class SessionNames {
     } finally {
       if (fd !== undefined) closeSync(fd)
     }
+  }
+
+  dispose(): void {
+    this.storage.dispose()
   }
 }

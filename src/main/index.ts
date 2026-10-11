@@ -28,6 +28,7 @@ import { IntegrationManager, integrationAssets } from './tracking/integrations'
 import { ProfileSettings } from './settings'
 import { SessionNotifications } from './notifications'
 import { performSessionAction } from './session-actions'
+import { sessionFamilies } from '../shared/session-families'
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = resolve(mainDirectory, '../renderer')
@@ -60,6 +61,7 @@ let expiryTimer: ReturnType<typeof setInterval> | null = null
 let publishTimer: ReturnType<typeof setTimeout> | null = null
 let broadcastTimer: ReturnType<typeof setTimeout> | null = null
 let setupBusy = false
+let names: SessionNames | null = null
 let openOnReady = process.argv.includes('--dashboard')
 let navigationReady = false
 let pendingRoute: DashboardRoute | null = null
@@ -305,9 +307,10 @@ function broadcastNow(): void {
   for (const window of trustedWindows)
     if (!window.isDestroyed() && isTrustedPage(window.webContents.getURL()))
       window.webContents.send(IPC.updated, snapshot)
-  const attention = snapshot.sessions.filter((item) => item.status === 'needs-attention').length
+  const families = sessionFamilies(snapshot.sessions, [...snapshot.sessions, ...snapshot.history])
+  const attention = families.filter((item) => item.summary.status === 'needs-attention').length
   tray?.setToolTip(
-    `Buddy · ${snapshot.sessions.length} observed sessions${attention ? ` · ${attention} need attention` : ''}`,
+    `Buddy · ${families.length} observed sessions${attention ? ` · ${attention} need attention` : ''}`,
   )
   tray?.setTitle(attention ? ` ${attention}` : '')
 }
@@ -330,7 +333,7 @@ function publishSessions(): void {
     coverage: records.sessions.length || records.history.length ? 'partial' : 'not-connected',
     tracking: {
       available: store.message === null,
-      phase: store.message ? 'unavailable' : 'running',
+      phase: store.message ? 'paused' : 'running',
       message:
         store.message ??
         (store.capacityEvictions
@@ -382,18 +385,25 @@ function installTray(): void {
   icon.setTemplateImage(true)
   tray = new Tray(icon)
   const showMenu = (): void => {
-    const observed = snapshot.sessions.length
-    const working = snapshot.sessions.filter((item) => item.status === 'working').length
+    const families = sessionFamilies(snapshot.sessions, [...snapshot.sessions, ...snapshot.history])
+    const observed = families.length
+    const working = families.filter((item) => item.summary.status === 'working').length
+    const subagents = snapshot.sessions.filter((item) => item.parentId).length
     tray?.popUpContextMenu(
       Menu.buildFromTemplate([
-        { label: `${observed} observed sessions · ${working} working`, enabled: false },
+        {
+          label: `${observed} observed sessions · ${working} working${subagents ? ` · ${subagents} subagents` : ''}`,
+          enabled: false,
+        },
         {
           label:
             snapshot.tracking.phase === 'starting'
               ? 'Starting local observation…'
-              : snapshot.tracking.available
-                ? 'Local observation running'
-                : 'Tracking unavailable — open Integrations',
+              : snapshot.tracking.phase === 'paused'
+                ? 'Observation paused — storage unavailable'
+                : snapshot.tracking.available
+                  ? 'Local observation running'
+                  : 'Tracking unavailable — open Integrations',
           enabled: false,
         },
         { type: 'separator' },
@@ -590,10 +600,10 @@ if (!app.requestSingleInstanceLock()) {
         settings,
       )
       try {
-        const names = new SessionNames()
+        names = new SessionNames()
         store = new SessionStore(
           join(profile, 'sessions.json'),
-          (harness, id) => names.lookup(harness, id),
+          (harness, id, cwd) => names?.lookup(harness, id, cwd) ?? null,
           { flushDelayMs: 200, onPersistenceError: () => scheduleSessions() },
         )
         store.refreshNames()
@@ -650,6 +660,7 @@ if (!app.requestSingleInstanceLock()) {
         if (broadcastTimer) clearTimeout(broadcastTimer)
         bridge?.dispose()
         store?.dispose()
+        names?.dispose()
         notifications?.reset()
         powerMonitor.removeListener('resume', reconcileAfterSleep)
         powerMonitor.removeListener('unlock-screen', reconcileAfterSleep)
