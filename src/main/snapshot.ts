@@ -1,33 +1,17 @@
 import { app } from 'electron'
 import type { BuddySnapshot, HarnessCatalogEntry } from '../shared/contracts'
 import { createAvatarPreviews } from './avatars'
+import { HARNESSES } from './tracking/adapters'
 
-const harnesses: HarnessCatalogEntry[] = [
-  {
-    id: 'codex',
-    name: 'Codex',
-    shortLabel: 'CX',
-    description: 'Local CLI hooks first. Desktop and IDE runtimes are verified separately.',
-    connection: 'not-connected',
-    installation: 'not-checked',
-  },
-  {
-    id: 'claude-code',
-    name: 'Claude Code',
-    shortLabel: 'CC',
-    description: 'Observation hooks for local Code sessions. Chat and Cowork are separate.',
-    connection: 'not-connected',
-    installation: 'not-checked',
-  },
-  {
-    id: 'opencode',
-    name: 'OpenCode',
-    shortLabel: 'OC',
-    description: 'Local plugin events first. Server connections have their own coverage.',
-    connection: 'not-connected',
-    installation: 'not-checked',
-  },
-]
+const harnesses: HarnessCatalogEntry[] = HARNESSES.map(({ id, name, shortLabel, description }) => ({
+  id,
+  name,
+  shortLabel,
+  description,
+  connection: 'not-connected',
+  installation: 'not-checked',
+  observer: 'not-installed',
+}))
 
 export function createInitialSnapshot(): BuddySnapshot {
   return {
@@ -35,12 +19,11 @@ export function createInitialSnapshot(): BuddySnapshot {
     coverage: 'not-connected',
     sessions: [],
     history: [],
+    tracking: { available: false, phase: 'starting', message: 'Starting local observation…' },
     harnesses,
     avatarPreviews: createAvatarPreviews(),
     overlay: {
-      mode: 'idle',
       displayId: null,
-      clickThrough: false,
       geometry: 'loading',
       message: null,
       displays: [],
@@ -49,7 +32,6 @@ export function createInitialSnapshot(): BuddySnapshot {
       visible: false,
       actualBounds: null,
       shortcutAvailable: false,
-      previewSessions: [],
     },
     runtime: {
       appVersion: app.getVersion(),
@@ -59,7 +41,6 @@ export function createInitialSnapshot(): BuddySnapshot {
       platform: process.platform,
       architecture: process.arch,
       packaged: app.isPackaged,
-      overlayPreviewEnabled: !app.isPackaged || process.argv.includes('--overlay-preview'),
     },
   }
 }

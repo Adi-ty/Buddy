@@ -1,30 +1,25 @@
-import { Component, useEffect, type ReactNode } from 'react'
+import { harnessFor } from '@/lib/harness'
+import { Component, useEffect, useState, type ReactNode } from 'react'
 import { MemoryRouter, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
-import {
-  ArrowRight,
-  Circle,
-  Clock3,
-  Cpu,
-  History,
-  Layers3,
-  Plug,
-  Monitor,
-  Sparkles,
-} from 'lucide-react'
+import { ArrowRight, Circle, History, Layers3, Plug } from 'lucide-react'
 import type { BuddySnapshot } from '@shared/contracts'
-import { AvatarPreviewTile } from '@/components/avatar-preview'
+import { SessionAvatar } from '@/components/session-avatar'
+import { SessionList } from '@/components/session-list'
+import { IntegrationsPage } from '@/components/integrations-page'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { OverlayView } from '@/components/overlay-view'
-import { OverlayPreviewPage } from '@/components/overlay-preview-page'
+import { PageHeading } from '@/components/ui/page-heading'
+import { NotchSettings } from '@/components/notch-settings'
 import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
+import { useNotice } from '@/lib/use-notice'
+import { Notice } from '@/components/ui/notice'
 
 const navigation = [
   { path: '/sessions', label: 'Sessions', icon: Layers3 },
   { path: '/history', label: 'History', icon: History },
   { path: '/integrations', label: 'Integrations', icon: Plug },
-  { path: '/overlay-preview', label: 'Overlay preview', icon: Monitor },
 ] as const
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -81,7 +76,14 @@ function Dashboard() {
 
   return (
     <div className="dashboard-shell">
-      <a href="#main-content" className="skip-link">
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={(event) => {
+          event.preventDefault()
+          document.getElementById('main-content')?.focus()
+        }}
+      >
         Skip to content
       </a>
       <aside className="sidebar">
@@ -93,35 +95,45 @@ function Dashboard() {
           </div>
           <div>
             <div className="text-lg font-semibold tracking-tight">Buddy</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              A little closer to your work
-            </div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">Your agents, at a glance</div>
           </div>
         </div>
         <nav aria-label="Dashboard" className="space-y-1 px-3">
-          {navigation
-            .filter(
-              (item) => snapshot.runtime.overlayPreviewEnabled || item.path !== '/overlay-preview',
-            )
-            .map(({ path, label, icon: Icon }) => (
-              <NavLink
-                key={path}
-                to={path}
-                className={({ isActive }) => cn('nav-link', isActive && 'nav-link-active')}
-              >
-                <Icon size={17} aria-hidden="true" />
-                <span>{label}</span>
-              </NavLink>
-            ))}
+          {navigation.map(({ path, label, icon: Icon }) => (
+            <NavLink
+              key={path}
+              to={path}
+              className={({ isActive }) => cn('nav-link', isActive && 'nav-link-active')}
+            >
+              <Icon size={17} aria-hidden="true" />
+              <span>{label}</span>
+            </NavLink>
+          ))}
         </nav>
         <div className="mt-auto p-5">
           <div className="rounded-xl border border-border p-3.5">
             <div className="flex items-center gap-2 text-xs font-medium">
-              <Circle size={7} className="text-muted-foreground" aria-hidden="true" /> Awaiting
-              connections
+              <Circle
+                size={7}
+                className={
+                  snapshot.tracking.available
+                    ? 'fill-success text-success'
+                    : 'text-muted-foreground'
+                }
+                aria-hidden="true"
+              />{' '}
+              {snapshot.tracking.phase === 'starting'
+                ? 'Starting local observation…'
+                : snapshot.tracking.available
+                  ? 'Tracking running'
+                  : 'Tracking unavailable'}
             </div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              Your sessions will appear here once a source is connected.
+              {snapshot.tracking.phase === 'starting'
+                ? 'Preparing local session observation.'
+                : snapshot.tracking.available
+                  ? 'Buddy continues observing when this window is closed.'
+                  : 'Tracking is unavailable. Check Integrations.'}
             </p>
           </div>
           <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground">
@@ -135,11 +147,8 @@ function Dashboard() {
         <main id="main-content" className="main-content" tabIndex={-1}>
           <Routes>
             <Route path="/sessions" element={<SessionsPage snapshot={snapshot} />} />
-            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/history" element={<HistoryPage snapshot={snapshot} />} />
             <Route path="/integrations" element={<IntegrationsPage snapshot={snapshot} />} />
-            {snapshot.runtime.overlayPreviewEnabled && (
-              <Route path="/overlay-preview" element={<OverlayPreviewPage snapshot={snapshot} />} />
-            )}
             <Route path="*" element={<Navigate to="/sessions" replace />} />
           </Routes>
         </main>
@@ -148,154 +157,132 @@ function Dashboard() {
   )
 }
 
-function PageHeading({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string
-  subtitle: string
-  children?: ReactNode
-}) {
-  return (
-    <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 className="text-[27px] font-semibold tracking-tight">{title}</h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">{subtitle}</p>
-      </div>
-      {children}
-    </header>
-  )
-}
-
 function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const navigate = useNavigate()
+  const connected = snapshot.harnesses.filter((item) => item.observer === 'installed')
+  const finished = snapshot.sessions.filter((item) => item.status === 'completed').length
+  const errors = snapshot.sessions.filter((item) => item.status === 'error').length
+  const working = snapshot.sessions.filter((item) => item.status === 'working').length
+  const attention = snapshot.sessions.filter((item) => item.status === 'needs-attention').length
   return (
     <>
       <PageHeading
-        title="Your sessions"
-        subtitle="A quiet place to see what’s happening, and what needs you."
+        title="Sessions"
+        subtitle="Observed activity from your agents. Requests, errors and finished turns appear first."
       >
-        <Badge variant="outline">No sources connected</Badge>
+        <Button variant="outline" size="sm" onClick={() => navigate('/integrations')}>
+          <Plug /> Manage integrations
+        </Button>
       </PageHeading>
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { label: 'Open sessions', detail: 'Live session presence', icon: Layers3 },
-          { label: 'Working turns', detail: 'Observed agent activity', icon: Cpu },
-          { label: 'Needs attention', detail: 'Requests that need you', icon: Sparkles },
-        ].map(({ label, detail, icon: Icon }) => (
-          <div key={label} className="rounded-2xl border border-border p-4">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Icon size={14} aria-hidden="true" />
-              {label}
-            </div>
-            <div className="my-3 text-2xl text-muted-foreground" aria-label="Not available">
-              —
-            </div>
-            <p className="text-[11px] text-muted-foreground">{detail}</p>
+      <Notice
+        message={
+          snapshot.tracking.message
+            ? { text: snapshot.tracking.message, error: snapshot.tracking.phase === 'unavailable' }
+            : null
+        }
+        className="mb-4"
+      />
+      {snapshot.sessions.length > 0 ? (
+        <>
+          <div className="mb-5 flex items-center gap-2">
+            <Badge variant="outline">{snapshot.sessions.length} observed</Badge>
+            <Badge variant={working ? 'working' : 'outline'}>{working} working</Badge>
+            <Badge variant={finished ? 'success' : 'outline'}>{finished} finished</Badge>
+            {attention > 0 && <Badge variant="attention">{attention} need attention</Badge>}
+            {errors > 0 && (
+              <Badge variant="error">
+                {errors} {errors === 1 ? 'error' : 'errors'}
+              </Badge>
+            )}
           </div>
-        ))}
-      </div>
-      <section className="empty-stage mt-5" aria-labelledby="sessions-empty-heading">
-        <div className="flex items-end justify-center gap-5 pb-8 pt-2">
-          {snapshot.avatarPreviews.map((preview, index) => {
-            const harness = snapshot.harnesses.find((item) => item.id === preview.harness)!
-            return (
-              <AvatarPreviewTile
-                key={preview.harness}
-                preview={preview}
-                harness={harness}
+          <SessionList snapshot={snapshot} />
+        </>
+      ) : (
+        <section className="empty-stage" aria-labelledby="sessions-empty-heading">
+          <div className="flex items-end justify-center gap-5 pb-8 pt-2" aria-hidden="true">
+            {snapshot.avatarPreviews.map((avatar, index) => (
+              <SessionAvatar
+                key={avatar.harness}
+                avatar={avatar}
+                harness={harnessFor(snapshot, avatar.harness)}
                 className={cn(index === 1 ? 'size-[76px] -translate-y-3' : 'size-16')}
               />
-            )
-          })}
-        </div>
-        <h2 id="sessions-empty-heading" className="text-xl font-semibold tracking-tight">
-          A face for every session.
-        </h2>
-        <p className="mx-auto mt-3 max-w-[370px] text-sm leading-6 text-muted-foreground">
-          Connect your coding agents to keep their sessions in view. Buddy stays out of the way
-          until there’s something to see.
-        </p>
-        <Button className="mt-6" onClick={() => navigate('/integrations')}>
-          View integrations <ArrowRight />
+            ))}
+          </div>
+          <h2 id="sessions-empty-heading" className="text-xl font-semibold tracking-tight">
+            {connected.length ? 'Ready for your next session' : 'Connect your first agent'}
+          </h2>
+          <p className="mx-auto mt-3 max-w-[390px] text-sm leading-6 text-muted-foreground">
+            {connected.length
+              ? `Start a session in ${connected.map((item) => item.name).join(' or ')}. If you just installed the observer, restart the agent and follow its setup instructions in Integrations.`
+              : 'Install an observer to see your agent’s activity and permission requests in the notch.'}
+          </p>
+          <Button className="mt-6" onClick={() => navigate('/integrations')}>
+            {connected.length ? 'Check integrations' : 'Set up integrations'} <ArrowRight />
+          </Button>
+          <p className="mt-5 text-xs text-muted-foreground">
+            The notch appears automatically when a session sends activity.
+          </p>
+        </section>
+      )}
+      <NotchSettings snapshot={snapshot} />
+    </>
+  )
+}
+
+function HistoryPage({ snapshot }: { snapshot: BuddySnapshot }) {
+  const [confirm, setConfirm] = useState(false)
+  const [pending, setPending] = useState(false)
+  const { notice, setNotice, reportError } = useNotice()
+  const clear = async () => {
+    setPending(true)
+    try {
+      await window.buddy.clearHistory()
+      setConfirm(false)
+      setNotice({
+        text: 'Past session metadata and avatar identities cleared. Live sessions are retained.',
+        error: false,
+      })
+    } catch (error) {
+      reportError(error, 'History could not be cleared.')
+    } finally {
+      setPending(false)
+    }
+  }
+  return (
+    <>
+      <PageHeading title="History" subtitle="Sessions that have ended or stopped sending activity.">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={pending || !snapshot.history.length || !snapshot.tracking.available}
+          onClick={() => setConfirm(true)}
+        >
+          Clear history
         </Button>
-        <p className="mt-5 text-[11px] text-muted-foreground">
-          Avatar previews · Bottts Neutral by DiceBear, artwork by Pablo Stanley
-        </p>
-      </section>
-      <p className="mt-5 flex items-center gap-2 text-xs leading-5 text-muted-foreground">
-        <Circle size={8} aria-hidden="true" /> Installed tools, open sessions, and working turns are
-        tracked separately.
-      </p>
-    </>
-  )
-}
-
-function HistoryPage() {
-  return (
-    <>
-      <PageHeading
-        title="History"
-        subtitle="Conversations you’ve seen with Buddy, separate from live sessions."
-      />
-      <section className="empty-stage" aria-labelledby="history-empty-heading">
-        <div className="mb-5 inline-flex size-14 items-center justify-center rounded-2xl border border-border bg-secondary">
-          <Clock3 size={24} className="text-muted-foreground" aria-hidden="true" />
+      </PageHeading>
+      {confirm && (
+        <div className="mb-4 rounded-xl border border-border p-4 text-sm" role="alert">
+          <p>
+            Clear {snapshot.history.length} past sessions and their saved avatars? Live sessions
+            stay connected.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Button size="sm" disabled={pending} onClick={() => void clear()}>
+              Clear past sessions
+            </Button>
+            <Button variant="ghost" size="sm" disabled={pending} onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+          </div>
         </div>
-        <h2 id="history-empty-heading" className="text-xl font-semibold">
-          Nothing here yet.
-        </h2>
-        <p className="mx-auto mt-3 max-w-sm text-sm leading-6 text-muted-foreground">
-          No conversations have been recorded by Buddy. Your agents’ existing history hasn’t been
-          imported.
-        </p>
-      </section>
-    </>
-  )
-}
-
-function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
-  return (
-    <>
-      <PageHeading
-        title="Integrations"
-        subtitle="Each agent connects in its own way. Each client is verified separately."
-      />
-      <div className="space-y-3">
-        {snapshot.harnesses.map((harness) => {
-          const preview = snapshot.avatarPreviews.find((item) => item.harness === harness.id)!
-          return (
-            <section
-              key={harness.id}
-              aria-labelledby={`harness-${harness.id}`}
-              className="rounded-2xl border border-border bg-card p-5"
-            >
-              <div className="flex items-start gap-5">
-                <AvatarPreviewTile preview={preview} harness={harness} className="size-12" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 id={`harness-${harness.id}`} className="font-semibold">
-                      {harness.name}
-                    </h2>
-                    <Badge variant="outline">Not connected</Badge>
-                  </div>
-                  <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
-                    {harness.description}
-                  </p>
-                  <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted-foreground">
-                    <span>Installation: not checked</span>
-                    <span>Session awareness: unavailable</span>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )
-        })}
-      </div>
-      <div className="mt-6 rounded-xl border border-dashed border-border px-4 py-3 text-xs leading-5 text-muted-foreground">
-        Integration setup is coming in a later step. Buddy hasn’t changed any agent configuration.
-      </div>
+      )}
+      <Notice message={notice} className="mb-3" />
+      <SessionList snapshot={snapshot} history />
+      <p className="mt-5 text-xs text-muted-foreground">
+        Retains up to 2,000 session records across live sessions and history. Existing agent
+        conversations are not imported.
+      </p>
     </>
   )
 }

@@ -1,20 +1,28 @@
-export const DASHBOARD_ROUTES = [
-  '/sessions',
-  '/history',
-  '/integrations',
-  '/overlay-preview',
-] as const
+export const DASHBOARD_ROUTES = ['/sessions', '/history', '/integrations'] as const
 export type DashboardRoute = (typeof DASHBOARD_ROUTES)[number]
+export const SESSION_ACTIONS = ['reveal', 'copyPath', 'copyId'] as const
+export type SessionAction = (typeof SESSION_ACTIONS)[number]
 
-export type HarnessId = 'codex' | 'claude-code' | 'opencode'
+import type { HarnessId } from './harnesses'
+export type { HarnessId } from './harnesses'
 
 export interface HarnessCatalogEntry {
   id: HarnessId
   name: string
   shortLabel: string
   description: string
-  connection: 'not-connected'
-  installation: 'not-checked'
+  connection: 'not-connected' | 'configured' | 'observed' | 'stale'
+  installation: 'not-checked' | 'installed' | 'not-found'
+  observer: 'not-installed' | 'installed' | 'incomplete'
+  version?: string
+  canInstall?: boolean
+  setup?: string
+  variants?: string
+  installNotice?: string
+  removeNotice?: string
+  compatibility?: 'verified' | 'unverified' | 'unsupported'
+  canInstallUnverified?: boolean
+  lastEventAt?: number
 }
 
 export interface AvatarPreview {
@@ -43,22 +51,11 @@ export interface OverlayDisplay {
   auxiliaryRight: Rect | null
 }
 
-export const PREVIEW_MODES = ['idle', 'running', 'overflow', 'attention'] as const
-export type PreviewMode = (typeof PREVIEW_MODES)[number]
-export interface OverlayPreviewOptions {
-  mode: PreviewMode
+export interface OverlayOptions {
   displayId: number | null
-  clickThrough: boolean
 }
 
-export interface PreviewSession extends AvatarPreview {
-  id: string
-  name: string
-  project: string
-  status: 'working' | 'waiting' | 'needs-attention'
-}
-
-export interface OverlayState extends OverlayPreviewOptions {
+export interface OverlayState extends OverlayOptions {
   geometry: 'loading' | 'ready' | 'unavailable' | 'suspended'
   message: string | null
   displays: readonly OverlayDisplay[]
@@ -67,16 +64,55 @@ export interface OverlayState extends OverlayPreviewOptions {
   visible: boolean
   actualBounds: Rect | null
   shortcutAvailable: boolean
-  previewSessions: readonly PreviewSession[]
 }
 
 // No provider has been observed at bootstrap. Empty arrays are not a claim of
 // zero provider sessions: coverage is explicitly unavailable until connected.
+export type SessionStatus =
+  | 'working'
+  | 'idle'
+  | 'completed'
+  | 'needs-attention'
+  | 'error'
+  | 'interrupted'
+  | 'unknown'
+export interface SessionActivity {
+  event: string
+  at: number
+  tool: string | null
+}
+export interface SessionRecord extends AvatarPreview {
+  id: string
+  providerSessionId: string
+  source: 'hooks' | 'plugin'
+  client: 'unknown'
+  name: string
+  project: string
+  cwd: string | null
+  parentId: string | null
+  status: SessionStatus
+  statusChangedAt: number
+  presence: 'observed' | 'stale' | 'closed'
+  firstSeen: number
+  lastSeen: number
+  ordinal: number
+  turnId: string | null
+  attention: readonly { id: string; tool: string | null; kind: 'permission' | 'question' }[]
+  activity: readonly SessionActivity[]
+}
+
 export interface BuddySnapshot {
   revision: number
-  coverage: 'not-connected'
-  sessions: readonly never[]
-  history: readonly never[]
+  coverage: 'not-connected' | 'partial'
+  sessions: readonly SessionRecord[]
+  history: readonly SessionRecord[]
+  tracking: {
+    available: boolean
+    phase: 'starting' | 'running' | 'unavailable'
+    message: string | null
+    droppedObservations?: number
+    capacityEvictions?: number
+  }
   harnesses: readonly HarnessCatalogEntry[]
   avatarPreviews: readonly AvatarPreview[]
   overlay: OverlayState
@@ -88,7 +124,6 @@ export interface BuddySnapshot {
     platform: string
     architecture: string
     packaged: boolean
-    overlayPreviewEnabled: boolean
   }
 }
 
@@ -96,10 +131,15 @@ export interface BuddyAPI {
   getSnapshot(): Promise<BuddySnapshot>
   onSnapshot(listener: (snapshot: BuddySnapshot) => void): () => void
   onNavigate(listener: (route: DashboardRoute) => void): () => void
-  setOverlayPreview(options: OverlayPreviewOptions): Promise<void>
+  setOverlayOptions(options: OverlayOptions): Promise<void>
   refreshDisplays(): Promise<void>
   setOverlayExpanded(expanded: boolean): Promise<void>
   openDashboard(): Promise<void>
+  installIntegration(harness: HarnessId, allowUnverified?: boolean): Promise<void>
+  removeIntegration(harness: HarnessId): Promise<void>
+  refreshIntegrations(): Promise<void>
+  sessionAction(id: string, action: SessionAction): Promise<void>
+  clearHistory(): Promise<void>
 }
 
 export const IPC = {
@@ -107,8 +147,13 @@ export const IPC = {
   navigate: 'buddy:navigate',
   navigationReady: 'buddy:navigation-ready',
   updated: 'buddy:snapshot-updated',
-  overlayPreview: 'buddy:overlay-preview',
+  overlayOptions: 'buddy:overlay-options',
   refreshDisplays: 'buddy:refresh-displays',
   overlayExpanded: 'buddy:overlay-expanded',
   openDashboard: 'buddy:open-dashboard',
+  installIntegration: 'buddy:install-integration',
+  removeIntegration: 'buddy:remove-integration',
+  refreshIntegrations: 'buddy:refresh-integrations',
+  sessionAction: 'buddy:session-action',
+  clearHistory: 'buddy:clear-history',
 } as const

@@ -1,12 +1,33 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { app, BrowserWindow, ipcMain, Menu, net, protocol, session } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  net,
+  nativeImage,
+  protocol,
+  session,
+  Tray,
+  powerMonitor,
+  shell,
+  clipboard,
+} from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
-import { DASHBOARD_ROUTES, IPC, PREVIEW_MODES } from '../shared/contracts'
-import type { BuddySnapshot, DashboardRoute, OverlayPreviewOptions } from '../shared/contracts'
+import { DASHBOARD_ROUTES, IPC } from '../shared/contracts'
+import { isHarnessId } from '../shared/harnesses'
+import type { BuddySnapshot, DashboardRoute, OverlayOptions, HarnessId } from '../shared/contracts'
 import { createInitialSnapshot } from './snapshot'
 import { OverlayController } from './overlay'
+import { SessionStore } from './tracking/store'
+import { SessionNames } from './tracking/session-names'
+import { ObservationBridge } from './tracking/bridge'
+import { IntegrationManager, integrationAssets } from './tracking/integrations'
+import { ProfileSettings } from './settings'
+import { SessionNotifications } from './notifications'
+import { performSessionAction } from './session-actions'
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = resolve(mainDirectory, '../renderer')
@@ -28,6 +49,18 @@ if (!app.isPackaged) {
 
 let dashboard: BrowserWindow | null = null
 let overlay: OverlayController | null = null
+let tray: Tray | null = null
+let store: SessionStore | null = null
+let bridge: ObservationBridge | null = null
+let integrations: IntegrationManager | null = null
+let settings: ProfileSettings | null = null
+let notifications: SessionNotifications | null = null
+let lastDetection = 0
+let expiryTimer: ReturnType<typeof setInterval> | null = null
+let publishTimer: ReturnType<typeof setTimeout> | null = null
+let broadcastTimer: ReturnType<typeof setTimeout> | null = null
+let setupBusy = false
+let openOnReady = process.argv.includes('--dashboard')
 let navigationReady = false
 let pendingRoute: DashboardRoute | null = null
 const trustedWindows = new Set<BrowserWindow>()
@@ -142,12 +175,21 @@ function createDashboard(route?: DashboardRoute): void {
   dashboard = window
   navigationReady = false
   secureWindow(window)
+  window.on('focus', () => {
+    if (Date.now() - lastDetection < 30_000 || setupBusy) return
+    setupBusy = true
+    void refreshIntegrations()
+      .catch((error) => console.error('CLI refresh failed', error))
+      .finally(() => {
+        setupBusy = false
+      })
+  })
   window.webContents.on('did-start-loading', () => {
     navigationReady = false
   })
   window.once('ready-to-show', () => {
-    if (route) window.show()
-    else window.showInactive()
+    window.show()
+    window.focus()
   })
   window.on('closed', () => {
     if (dashboard === window) dashboard = null
@@ -162,7 +204,7 @@ function createDashboard(route?: DashboardRoute): void {
 
 function createOverlayWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    title: 'Buddy overlay preview',
+    title: 'Buddy sessions',
     width: 320,
     height: 60,
     show: false,
@@ -201,10 +243,8 @@ function createOverlayWindow(): BrowserWindow {
 }
 
 function installMenu(): void {
-  const pages = ['Sessions', 'History', 'Integrations', 'Overlay preview']
-  const navigation: MenuItemConstructorOptions[] = DASHBOARD_ROUTES.filter(
-    (route) => snapshot.runtime.overlayPreviewEnabled || route !== '/overlay-preview',
-  ).map((route, index) => ({
+  const pages = ['Sessions', 'History', 'Integrations']
+  const navigation: MenuItemConstructorOptions[] = DASHBOARD_ROUTES.map((route, index) => ({
     label: pages[index],
     accelerator: `CmdOrCtrl+${index + 1}`,
     click: () => {
@@ -236,30 +276,6 @@ function installMenu(): void {
         label: 'View',
         submenu: [
           ...navigation,
-          ...(snapshot.runtime.overlayPreviewEnabled
-            ? [
-                {
-                  label: 'Toggle overlay preview',
-                  accelerator: 'CmdOrCtrl+Alt+O',
-                  click: () =>
-                    overlay?.configure({
-                      mode: snapshot.overlay.mode === 'idle' ? 'running' : 'idle',
-                      displayId: snapshot.overlay.displayId,
-                      clickThrough: snapshot.overlay.clickThrough,
-                    }),
-                },
-                {
-                  label: 'Preview attention request',
-                  accelerator: 'CmdOrCtrl+Alt+P',
-                  click: () =>
-                    overlay?.configure({
-                      mode: 'attention',
-                      displayId: snapshot.overlay.displayId,
-                      clickThrough: snapshot.overlay.clickThrough,
-                    }),
-                },
-              ]
-            : []),
           { type: 'separator' },
           { role: 'resetZoom' },
           { role: 'zoomIn' },
@@ -273,6 +289,148 @@ function installMenu(): void {
 }
 
 let snapshot: BuddySnapshot
+
+function broadcast(): void {
+  if (broadcastTimer) return
+  broadcastTimer = setTimeout(() => {
+    broadcastTimer = null
+    broadcastNow()
+  }, 100)
+}
+
+function broadcastNow(): void {
+  if (broadcastTimer) clearTimeout(broadcastTimer)
+  broadcastTimer = null
+  snapshot = { ...snapshot, revision: snapshot.revision + 1 }
+  for (const window of trustedWindows)
+    if (!window.isDestroyed() && isTrustedPage(window.webContents.getURL()))
+      window.webContents.send(IPC.updated, snapshot)
+  const attention = snapshot.sessions.filter((item) => item.status === 'needs-attention').length
+  tray?.setToolTip(
+    `Buddy · ${snapshot.sessions.length} observed sessions${attention ? ` · ${attention} need attention` : ''}`,
+  )
+  tray?.setTitle(attention ? ` ${attention}` : '')
+}
+
+function scheduleSessions(): void {
+  if (publishTimer) return
+  publishTimer = setTimeout(() => {
+    publishTimer = null
+    publishSessions()
+  }, 100)
+}
+
+function publishSessions(): void {
+  if (!store) return
+  const records = store.snapshot()
+  notifications?.reconcileObserved(records.sessions)
+  snapshot = {
+    ...snapshot,
+    ...records,
+    coverage: records.sessions.length || records.history.length ? 'partial' : 'not-connected',
+    tracking: {
+      available: store.message === null,
+      phase: store.message ? 'unavailable' : 'running',
+      message:
+        store.message ??
+        (store.capacityEvictions
+          ? 'Session capacity reached; the oldest observations were omitted.'
+          : null),
+      droppedObservations: store.droppedObservations,
+      capacityEvictions: store.capacityEvictions,
+    },
+  }
+  snapshot = {
+    ...snapshot,
+    harnesses: snapshot.harnesses.map((entry) => {
+      const observed = [...records.sessions, ...records.history].filter(
+        (record) => record.harness === entry.id,
+      )
+      const recent = records.sessions.some((record) => record.harness === entry.id)
+      return {
+        ...entry,
+        lastEventAt: store?.lastEventAt(entry.id),
+        connection: recent
+          ? 'observed'
+          : entry.observer === 'installed'
+            ? observed.length
+              ? 'stale'
+              : 'configured'
+            : 'not-connected',
+      }
+    }),
+  }
+  overlay?.setLiveSessions(records.sessions)
+  broadcastNow()
+}
+
+async function refreshIntegrations(): Promise<void> {
+  if (!integrations) return
+  lastDetection = Date.now()
+  const harnesses = await integrations.refresh(snapshot.harnesses)
+  // Keep display/session updates received while CLI detection was in flight.
+  snapshot = { ...snapshot, harnesses }
+  publishSessions()
+  if (!store) broadcast()
+}
+
+function installTray(): void {
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'trayTemplate.png')
+    : resolve(mainDirectory, '../../resources/trayTemplate.png')
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 })
+  icon.setTemplateImage(true)
+  tray = new Tray(icon)
+  const showMenu = (): void => {
+    const observed = snapshot.sessions.length
+    const working = snapshot.sessions.filter((item) => item.status === 'working').length
+    tray?.popUpContextMenu(
+      Menu.buildFromTemplate([
+        { label: `${observed} observed sessions · ${working} working`, enabled: false },
+        {
+          label:
+            snapshot.tracking.phase === 'starting'
+              ? 'Starting local observation…'
+              : snapshot.tracking.available
+                ? 'Local observation running'
+                : 'Tracking unavailable — open Integrations',
+          enabled: false,
+        },
+        { type: 'separator' },
+        { label: 'Open dashboard', click: () => createDashboard('/sessions') },
+        { label: 'Integrations', click: () => createDashboard('/integrations') },
+        { label: 'Refresh display placement', click: () => overlay?.refresh() },
+        { type: 'separator' },
+        {
+          label: 'Desktop notifications',
+          type: 'checkbox',
+          checked: settings?.desktopNotifications ?? true,
+          click: (item) => {
+            try {
+              settings?.setDesktopNotifications(item.checked)
+              if (!item.checked) notifications?.reset()
+            } catch (error) {
+              console.error('Notification setting could not be saved', error)
+            }
+          },
+        },
+        {
+          label: 'Launch at login',
+          type: 'checkbox',
+          enabled: app.isPackaged,
+          checked: app.isPackaged && app.getLoginItemSettings().openAtLogin,
+          click: (item) => {
+            if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: item.checked })
+          },
+        },
+        { label: 'Quit Buddy', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
+      ]),
+    )
+  }
+  tray.on('click', showMenu)
+  tray.on('right-click', showMenu)
+  tray.setToolTip('Buddy · starting local observation')
+}
 
 function trustedRequest(
   event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent,
@@ -294,13 +452,13 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    createDashboard()
-    dashboard?.focus()
+    if (snapshot) createDashboard('/sessions')
+    else openOnReady = true
   })
 
   void app
     .whenReady()
-    .then(() => {
+    .then(async () => {
       snapshot = createInitialSnapshot()
       installRendererSecurity()
       ipcMain.on(IPC.navigationReady, (event, ...args: unknown[]) => {
@@ -325,42 +483,31 @@ if (!app.requestSingleInstanceLock()) {
         {
           getState: () => snapshot.overlay,
           publish: (state) => {
-            snapshot = { ...snapshot, revision: snapshot.revision + 1, overlay: state }
-            for (const window of trustedWindows)
-              if (!window.isDestroyed() && isTrustedPage(window.webContents.getURL()))
-                window.webContents.send(IPC.updated, snapshot)
+            snapshot = { ...snapshot, overlay: state }
+            broadcast()
           },
           createWindow: createOverlayWindow,
-          openDashboard: () =>
-            createDashboard(
-              snapshot.runtime.overlayPreviewEnabled && snapshot.overlay.mode !== 'idle'
-                ? '/overlay-preview'
-                : '/sessions',
-            ),
+          openDashboard: () => createDashboard('/sessions'),
         },
         mainDirectory,
       )
-      ipcMain.handle(IPC.overlayPreview, (event, ...args: unknown[]) => {
+      ipcMain.handle(IPC.overlayOptions, (event, ...args: unknown[]) => {
         trustedRequest(event, true)
-        const value = args[0] as Partial<OverlayPreviewOptions> | undefined
+        const value = args[0] as Partial<OverlayOptions> | undefined
         if (
-          !snapshot.runtime.overlayPreviewEnabled ||
           args.length !== 1 ||
           !value ||
           typeof value !== 'object' ||
           Array.isArray(value) ||
-          !PREVIEW_MODES.includes(value.mode!) ||
-          typeof value.clickThrough !== 'boolean' ||
           (value.displayId !== null &&
             !snapshot.overlay.displays.some((display) => display.id === value.displayId))
         )
-          throw new Error('Invalid overlay preview request')
-        overlay?.configure(value as OverlayPreviewOptions)
+          throw new Error('Invalid overlay options')
+        overlay?.configure({ displayId: value.displayId as number | null })
       })
       ipcMain.handle(IPC.refreshDisplays, (event, ...args: unknown[]) => {
         trustedRequest(event, true)
-        if (!snapshot.runtime.overlayPreviewEnabled || args.length)
-          throw new Error('Invalid display refresh request')
+        if (args.length) throw new Error('Invalid display refresh request')
         overlay?.refresh()
       })
       ipcMain.handle(IPC.overlayExpanded, (event, ...args: unknown[]) => {
@@ -372,17 +519,143 @@ if (!app.requestSingleInstanceLock()) {
       ipcMain.handle(IPC.openDashboard, (event, ...args: unknown[]) => {
         trustedRequest(event)
         if (args.length) throw new Error('Invalid dashboard request')
-        createDashboard(
-          snapshot.runtime.overlayPreviewEnabled && snapshot.overlay.mode !== 'idle'
-            ? '/overlay-preview'
-            : '/sessions',
-        )
+        createDashboard('/sessions')
+      })
+      for (const [channel, install] of [
+        [IPC.installIntegration, true],
+        [IPC.removeIntegration, false],
+      ] as const) {
+        ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+          trustedRequest(event, true)
+          if (
+            (args.length !== 1 &&
+              !(install && args.length === 2 && typeof args[1] === 'boolean')) ||
+            !isHarnessId(args[0])
+          )
+            throw new Error('Invalid harness')
+          if (!snapshot.tracking.available || !integrations)
+            throw new Error('Local observation is unavailable')
+          if (setupBusy) throw new Error('Another integration operation is in progress')
+          setupBusy = true
+          try {
+            if (install) await integrations.install(args[0] as HarnessId, args[1] === true)
+            else integrations.remove(args[0] as HarnessId)
+            await refreshIntegrations()
+          } finally {
+            setupBusy = false
+          }
+        })
+      }
+      ipcMain.handle(IPC.refreshIntegrations, async (event, ...args: unknown[]) => {
+        trustedRequest(event, true)
+        if (args.length) throw new Error('Invalid refresh request')
+        if (setupBusy) throw new Error('Another integration operation is in progress')
+        setupBusy = true
+        try {
+          await refreshIntegrations()
+        } finally {
+          setupBusy = false
+        }
+      })
+      ipcMain.handle(IPC.sessionAction, (event, ...args: unknown[]) => {
+        trustedRequest(event, true)
+        if (args.length !== 2) throw new Error('Invalid session action')
+        performSessionAction(store, args[0], args[1], {
+          writeText: (text) => clipboard.writeText(text),
+          showItemInFolder: (path) => shell.showItemInFolder(path),
+        })
+      })
+      ipcMain.handle(IPC.clearHistory, (event, ...args: unknown[]) => {
+        trustedRequest(event, true)
+        if (args.length) throw new Error('Invalid history request')
+        if (!store || !snapshot.tracking.available)
+          throw new Error('Session history is unavailable')
+        store.clearHistory()
+        publishSessions()
       })
       installMenu()
-      createDashboard()
+      if (process.platform === 'darwin') app.dock?.hide()
+      installTray()
       overlay.start()
+      const profile = app.getPath('userData')
+      settings = new ProfileSettings(join(profile, 'settings.json'))
+      notifications = new SessionNotifications(
+        () => settings?.desktopNotifications ?? true,
+        () => createDashboard('/sessions'),
+      )
+      integrations = new IntegrationManager(
+        profile,
+        integrationAssets(mainDirectory, app.isPackaged),
+        !app.isPackaged,
+        settings,
+      )
+      try {
+        const names = new SessionNames()
+        store = new SessionStore(
+          join(profile, 'sessions.json'),
+          (harness, id) => names.lookup(harness, id),
+          { flushDelayMs: 200, onPersistenceError: () => scheduleSessions() },
+        )
+        store.refreshNames()
+        bridge = new ObservationBridge(profile, (event) => {
+          try {
+            const id = `${event.harness}:${event.sessionId}`
+            const before = store?.get(id) ?? null
+            if (store?.apply(event)) {
+              notifications?.observe(before, store.get(id))
+              scheduleSessions()
+            } else if (store?.message) scheduleSessions()
+          } catch (error) {
+            console.error('Session persistence failed', error)
+            publishSessions()
+            throw error
+          }
+        })
+        await bridge.start()
+        publishSessions()
+        expiryTimer = setInterval(() => {
+          try {
+            const recovered = store?.retryPersistence()
+            const expired = store?.expire()
+            const renamed = store?.refreshNames()
+            if (recovered || expired || renamed) publishSessions()
+          } catch {
+            /* Keep last durable state visible. */
+          }
+        }, 15_000)
+        powerMonitor.on('resume', reconcileAfterSleep)
+        powerMonitor.on('unlock-screen', reconcileAfterSleep)
+      } catch (error) {
+        console.error('Local tracking failed to start', error)
+        bridge?.dispose()
+        bridge = null
+        store = null
+        snapshot = {
+          ...snapshot,
+          tracking: {
+            available: false,
+            phase: 'unavailable',
+            message:
+              'Local tracking could not start. Existing data was preserved. Quit Buddy and check its data directory.',
+          },
+        }
+        broadcast()
+      }
+      await refreshIntegrations()
+      if (openOnReady) createDashboard('/sessions')
       app.on('activate', () => createDashboard('/sessions'))
-      app.once('will-quit', () => overlay?.dispose())
+      app.once('will-quit', () => {
+        if (expiryTimer) clearInterval(expiryTimer)
+        if (publishTimer) clearTimeout(publishTimer)
+        if (broadcastTimer) clearTimeout(broadcastTimer)
+        bridge?.dispose()
+        store?.dispose()
+        notifications?.reset()
+        powerMonitor.removeListener('resume', reconcileAfterSleep)
+        powerMonitor.removeListener('unlock-screen', reconcileAfterSleep)
+        overlay?.dispose()
+        tray?.destroy()
+      })
     })
     .catch((error: unknown) => {
       console.error('Buddy failed to start', error)
@@ -392,4 +665,12 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
+}
+
+function reconcileAfterSleep(): void {
+  try {
+    if (store?.expire(Date.now(), true)) publishSessions()
+  } catch {
+    /* Recovery awaits a fresh provider event. */
+  }
 }

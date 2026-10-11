@@ -1,0 +1,116 @@
+import { readFileSync } from 'node:fs'
+import { connect } from 'node:net'
+import { createHash, randomUUID } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
+
+// Shared by command hooks and the OpenCode plugin. Never sends prompts, tool
+// inputs/results, transcripts, permission resources or errors. OpenCode session
+// titles are included only as display names.
+export function metadata(value) {
+  const fields = [
+    'id',
+    'harness',
+    'event',
+    'sessionId',
+    'parentId',
+    'agentId',
+    'cwd',
+    'title',
+    'turnId',
+    'tool',
+    'requestId',
+    'notificationType',
+    'status',
+  ]
+  const output = { version: 1, id: randomUUID(), at: Date.now() }
+  for (const field of fields) {
+    const text = value[field]
+    if (
+      typeof text === 'string' &&
+      text.length &&
+      text.length <= (field === 'cwd' ? 2048 : 256) &&
+      !/[\u0000-\u001f]/.test(text)
+    )
+      output[field] = text
+  }
+  if (Number.isFinite(value.at)) output.at = value.at
+  if (Array.isArray(value.attention) && value.attention.length <= 32)
+    output.attention = value.attention.map((item) => ({ id: item.id, kind: item.kind }))
+  return output
+}
+
+export function report(configPath, value) {
+  return new Promise((resolve) => {
+    let socket
+    const done = () => {
+      socket?.destroy()
+      clearTimeout(deadline)
+      resolve()
+    }
+    const deadline = setTimeout(done, 100)
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf8'))
+      if (typeof config.socket !== 'string' || typeof config.token !== 'string') return done()
+      socket = connect(config.socket)
+      socket.once('error', done)
+      socket.once('data', done)
+      socket.once('close', done)
+      socket.once('connect', () =>
+        socket.end(JSON.stringify({ token: config.token, observation: metadata(value) }) + '\n'),
+      )
+    } catch {
+      done()
+    }
+  })
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Bound both stdin and transport, always exit successfully with no policy
+  // output. Sync hooks preserve invocation order without async teardown races.
+  const started = performance.timeOrigin
+  const watchdog = setTimeout(() => process.exit(0), 250)
+  let input = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', (chunk) => {
+    input += chunk
+    if (input.length > 1024 * 1024) process.exit(0)
+  })
+  process.stdin.on('error', () => process.exit(0))
+  process.stdin.on('end', async () => {
+    try {
+      const p = JSON.parse(input)
+      await report(process.argv[3], {
+        ...(p.tool_use_id &&
+        [
+          'PreToolUse',
+          'PostToolUse',
+          'PostToolUseFailure',
+          'PermissionRequest',
+          'PermissionDenied',
+        ].includes(p.hook_event_name)
+          ? {
+              id: createHash('sha256')
+                .update(
+                  JSON.stringify([process.argv[2], p.session_id, p.hook_event_name, p.tool_use_id]),
+                )
+                .digest('hex'),
+            }
+          : {}),
+        harness: process.argv[2],
+        at: started,
+        event: p.hook_event_name,
+        sessionId: p.session_id,
+        agentId: p.agent_id,
+        cwd: p.cwd,
+        turnId: p.turn_id,
+        tool: p.tool_name,
+        requestId: p.tool_use_id,
+        notificationType: p.notification_type,
+      })
+    } catch {
+      /* Observation is best effort. */
+    }
+    clearTimeout(watchdog)
+    process.exit(0)
+  })
+}

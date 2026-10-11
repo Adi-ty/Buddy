@@ -1,13 +1,13 @@
 import type { AvatarPreview, HarnessCatalogEntry } from '@shared/contracts'
 import { cn } from '@/lib/utils'
 
-export function AvatarPreviewTile({
-  preview,
+export function SessionAvatar({
+  avatar,
   harness,
   className,
   compactBadge = false,
 }: {
-  preview: AvatarPreview
+  avatar: AvatarPreview
   harness: HarnessCatalogEntry
   className?: string
   compactBadge?: boolean
@@ -15,8 +15,8 @@ export function AvatarPreviewTile({
   return (
     <div className={cn('relative shrink-0', className)}>
       <img
-        src={preview.dataUri}
-        alt={`${harness.name} avatar preview`}
+        src={avatar.dataUri}
+        alt={`${harness.name} avatar`}
         className="size-full rounded-[26%]"
         draggable={false}
       />

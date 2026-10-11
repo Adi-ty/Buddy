@@ -12,10 +12,16 @@ const api: BuddyAPI = {
     ipcRenderer.on(IPC.updated, handle)
     return () => ipcRenderer.removeListener(IPC.updated, handle)
   },
-  setOverlayPreview: (options) => ipcRenderer.invoke(IPC.overlayPreview, options),
+  setOverlayOptions: (options) => ipcRenderer.invoke(IPC.overlayOptions, options),
   refreshDisplays: () => ipcRenderer.invoke(IPC.refreshDisplays),
   setOverlayExpanded: (expanded) => ipcRenderer.invoke(IPC.overlayExpanded, expanded),
   openDashboard: () => ipcRenderer.invoke(IPC.openDashboard),
+  installIntegration: (harness, allowUnverified = false) =>
+    ipcRenderer.invoke(IPC.installIntegration, harness, allowUnverified),
+  removeIntegration: (harness) => ipcRenderer.invoke(IPC.removeIntegration, harness),
+  refreshIntegrations: () => ipcRenderer.invoke(IPC.refreshIntegrations),
+  sessionAction: (id, action) => ipcRenderer.invoke(IPC.sessionAction, id, action),
+  clearHistory: () => ipcRenderer.invoke(IPC.clearHistory),
   onNavigate: (listener) => {
     const handleNavigate = (_event: Electron.IpcRendererEvent, route: unknown): void => {
       if (typeof route === 'string' && DASHBOARD_ROUTES.some((allowed) => allowed === route)) {

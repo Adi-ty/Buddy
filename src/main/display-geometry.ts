@@ -152,8 +152,8 @@ export function matchDisplays(native: NativeDisplay[], electron: Display[]): Ove
 }
 
 export function shelfBounds(display: OverlayDisplay, expanded: boolean): Rect | null {
-  const width = Math.min(expanded ? 600 : 320, display.workArea.width - 24)
-  const height = expanded ? 470 : 60
+  const width = Math.min(expanded ? 440 : 320, display.workArea.width - 24)
+  const height = expanded ? 440 : 60
   const y = Math.ceil(Math.max(display.bounds.y + display.safeTop, display.workArea.y) + 6)
   if (width < 280 || y + height > display.workArea.y + display.workArea.height - 6) return null
   const center = display.camera

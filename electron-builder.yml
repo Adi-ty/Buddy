@@ -12,8 +12,14 @@ files:
 extraResources:
   - from: out/native/buddy-display
     to: native/buddy-display
+  - from: integrations
+    to: integrations
+  - from: resources/trayTemplate.png
+    to: trayTemplate.png
 asar: true
 mac:
+  extendInfo:
+    LSUIElement: true
   category: public.app-category.developer-tools
   minimumSystemVersion: '13.0.0'
   target:

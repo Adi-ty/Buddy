@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { app, BrowserWindow, globalShortcut, powerMonitor, screen } from 'electron'
-import type { OverlayPreviewOptions, OverlayState, PreviewSession } from '../shared/contracts'
-import { createAvatarPreviews } from './avatars'
+import type { OverlayOptions, OverlayState, SessionRecord } from '../shared/contracts'
 import {
   matchDisplays,
   parseNativeDisplays,
@@ -17,23 +16,6 @@ interface OverlayHost {
   openDashboard(): void
 }
 
-function createPreviewSessions(): PreviewSession[] {
-  const names = ['Tobo', 'Mira', 'Juno', 'Rex', 'Pip', 'Nova', 'Lumi', 'Otto']
-  const projects = ['buddy', 'web-client', 'api', 'docs']
-  return names.map((name, index) => {
-    const avatar = createAvatarPreviews()[index % 3]!
-    return {
-      ...avatar,
-      id: `preview-${index}`,
-      name,
-      project: projects[index % 4]!,
-      status: index % 3 === 2 ? 'waiting' : 'working',
-    }
-  })
-}
-
-// Geometry and all native window operations stay in main. Preview records never
-// enter the canonical session/history arrays or change any agent configuration.
 export class OverlayController {
   private window: BrowserWindow | null = null
   private ready = false
@@ -41,12 +23,15 @@ export class OverlayController {
   private disposed = false
   private generation = 0
   private failures = 0
+  private rendererFailures = 0
   private debounce: ReturnType<typeof setTimeout> | null = null
   private retry: ReturnType<typeof setTimeout> | null = null
   private probe: AbortController | null = null
   private polling: ReturnType<typeof setInterval> | null = null
   private leavingAt: number | null = null
-  private readonly previews = createPreviewSessions()
+  private sessions: readonly SessionRecord[] = []
+  private hoveringAt: number | null = null
+  private hoverSuppressed = false
   private readonly onDisplayChange = (): void => this.invalidate()
   private readonly onSuspend = (): void => {
     this.suspended = true
@@ -74,7 +59,7 @@ export class OverlayController {
     if (process.platform !== 'darwin') {
       this.update({
         geometry: 'unavailable',
-        message: 'The native overlay prototype requires macOS.',
+        message: 'The session notch requires macOS.',
       })
       return
     }
@@ -97,35 +82,30 @@ export class OverlayController {
     this.host.publish({ ...this.host.getState(), ...changes })
   }
 
-  configure(options: OverlayPreviewOptions): void {
-    const sessions =
-      options.mode === 'idle'
-        ? []
-        : this.previews.slice(0, options.mode === 'overflow' ? 8 : 3).map((session, index) => ({
-            ...session,
-            status:
-              options.mode === 'attention' && index === 0
-                ? ('needs-attention' as const)
-                : session.status,
-          }))
-    this.update({
-      ...options,
-      previewSessions: sessions,
-      expanded: false,
-      message: this.host.getState().geometry === 'ready' ? null : this.host.getState().message,
-    })
+  configure(options: OverlayOptions): void {
+    this.rendererFailures = 0
+    this.update({ ...options, expanded: false })
+    this.apply()
+  }
+
+  setLiveSessions(sessions: readonly SessionRecord[]): void {
+    this.sessions = sessions
+    if (!sessions.length && this.host.getState().expanded) this.update({ expanded: false })
     this.apply()
   }
 
   expand(expanded: boolean): void {
-    if (this.host.getState().mode === 'idle' || this.host.getState().clickThrough) return
+    if (!this.sessions.length) return
     this.update({ expanded })
     this.leavingAt = null
+    this.hoveringAt = null
+    this.hoverSuppressed = !expanded
     this.apply()
   }
 
   refresh(): void {
     this.failures = 0
+    this.rendererFailures = 0
     this.invalidate()
   }
 
@@ -187,7 +167,13 @@ export class OverlayController {
 
   private apply(): void {
     const state = this.host.getState()
-    if (this.suspended || this.disposed || state.mode === 'idle' || state.geometry !== 'ready') {
+    if (
+      this.suspended ||
+      this.disposed ||
+      this.rendererFailures >= 3 ||
+      !this.sessions.length ||
+      state.geometry !== 'ready'
+    ) {
       this.hide()
       return
     }
@@ -211,6 +197,7 @@ export class OverlayController {
       return
     }
     if (!this.window || this.window.isDestroyed()) {
+      if (this.retry && this.rendererFailures) return
       const window = this.host.createWindow()
       this.window = window
       this.ready = false
@@ -222,12 +209,25 @@ export class OverlayController {
         window.destroy()
         this.window = null
         this.ready = false
-        this.configure({
-          mode: 'idle',
-          displayId: this.host.getState().displayId,
-          clickThrough: this.host.getState().clickThrough,
+        this.rendererFailures++
+        this.update({
+          expanded: false,
+          visible: false,
+          actualBounds: null,
+          message:
+            this.rendererFailures < 3
+              ? 'Overlay renderer stopped. Reopening after recovery.'
+              : 'Overlay renderer repeatedly stopped. Refresh display placement from Buddy’s menu to retry.',
         })
-        this.update({ message: 'Overlay renderer stopped. Choose a preview to reopen it.' })
+        if (this.sessions.length && this.rendererFailures < 3) {
+          this.retry = setTimeout(
+            () => {
+              this.retry = null
+              this.apply()
+            },
+            1000 * 2 ** this.rendererFailures,
+          )
+        }
       })
     }
     this.window.setBounds(bounds, false)
@@ -240,7 +240,7 @@ export class OverlayController {
       })
       return
     }
-    this.window.setIgnoreMouseEvents(state.clickThrough, { forward: true })
+    this.window.setIgnoreMouseEvents(false)
     if (this.ready) this.window.showInactive()
     this.update({
       anchorId: anchor.id,
@@ -256,7 +256,7 @@ export class OverlayController {
 
   private checkPointer(): void {
     const state = this.host.getState()
-    if (!state.expanded || !this.window || !state.visible || state.clickThrough) return
+    if (!this.window || !state.visible) return
     const bounds = this.window.getBounds()
     const point = screen.getCursorScreenPoint()
     const inside =
@@ -264,6 +264,15 @@ export class OverlayController {
       point.x < bounds.x + bounds.width &&
       point.y >= bounds.y &&
       point.y < bounds.y + bounds.height
+    if (!state.expanded) {
+      if (!inside) {
+        this.hoveringAt = null
+        this.hoverSuppressed = false
+      } else if (this.hoverSuppressed) return
+      else if (this.hoveringAt === null) this.hoveringAt = Date.now()
+      else if (Date.now() - this.hoveringAt > 350) this.expand(true)
+      return
+    }
     if (inside) this.leavingAt = null
     else if (this.leavingAt === null) this.leavingAt = Date.now()
     else if (Date.now() - this.leavingAt > 1200) this.expand(false)
@@ -273,6 +282,7 @@ export class OverlayController {
     if (this.polling) clearInterval(this.polling)
     this.polling = null
     this.leavingAt = null
+    this.hoveringAt = null
     if (this.window && !this.window.isDestroyed()) {
       this.window.setIgnoreMouseEvents(true, { forward: true })
       this.window.hide()
