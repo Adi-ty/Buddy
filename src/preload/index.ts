@@ -22,6 +22,10 @@ const api: BuddyAPI = {
   refreshIntegrations: () => ipcRenderer.invoke(IPC.refreshIntegrations),
   sessionAction: (id, action) => ipcRenderer.invoke(IPC.sessionAction, id, action),
   clearHistory: () => ipcRenderer.invoke(IPC.clearHistory),
+  setIntegrationControls: (harness, enabled) =>
+    ipcRenderer.invoke(IPC.integrationControls, harness, enabled),
+  respondToRequest: (id, response) => ipcRenderer.invoke(IPC.respondToRequest, id, response),
+  setOverlayInput: (enabled) => ipcRenderer.invoke(IPC.overlayInput, enabled),
   onNavigate: (listener) => {
     const handleNavigate = (_event: Electron.IpcRendererEvent, route: unknown): void => {
       if (typeof route === 'string' && DASHBOARD_ROUTES.some((allowed) => allowed === route)) {

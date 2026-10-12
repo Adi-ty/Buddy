@@ -1,4 +1,4 @@
-import type { SessionRecord } from './contracts'
+import type { AgentRequest, SessionRecord } from './contracts'
 import { prioritizeSessions } from './sessions'
 
 export interface SessionFamily {
@@ -7,6 +7,23 @@ export interface SessionFamily {
   descendants: SessionRecord[]
   // Presentation only: canonical records retain their own semantic status.
   summary: SessionRecord
+}
+
+// Opening a family should lead to the agent waiting for input, including a
+// nested child. Ended descendants remain available only through explicit selection.
+export function familyInputSession(
+  family: SessionFamily,
+  requests: readonly AgentRequest[] = [],
+): SessionRecord {
+  const members = new Map(family.members.map((member) => [member.id, member]))
+  const pending = requests
+    .filter((request) => members.has(request.sessionId))
+    .sort((a, b) => a.createdAt - b.createdAt)[0]
+  return (
+    (pending && members.get(pending.sessionId)) ||
+    prioritizeSessions(family.members).find((member) => member.status === 'needs-attention') ||
+    family.root
+  )
 }
 
 export function sessionFamilies(

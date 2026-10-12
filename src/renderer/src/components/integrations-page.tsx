@@ -20,7 +20,13 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
     return () => clearInterval(timer)
   }, [])
   const act = async (
-    action: 'install' | 'install-unverified' | 'remove' | 'refresh',
+    action:
+      | 'install'
+      | 'install-unverified'
+      | 'remove'
+      | 'refresh'
+      | 'enable-controls'
+      | 'disable-controls',
     harness?: HarnessId,
   ) => {
     setPending(harness ?? 'refresh')
@@ -30,6 +36,19 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         await window.buddy.refreshIntegrations()
         setNotice({ error: false, text: 'Integrations refreshed.' })
       } else if (harness) {
+        if (action === 'enable-controls' || action === 'disable-controls') {
+          await window.buddy.setIntegrationControls(harness, action === 'enable-controls')
+          setNotice({
+            error: false,
+            text:
+              action === 'enable-controls'
+                ? harness === 'codex'
+                  ? 'Native Codex replies enabled. Connecting to its local app server.'
+                  : `Notch replies enabled. ${harness === 'opencode' ? 'Restart OpenCode once to load the updated plugin.' : 'Restart your agent once to load the response hooks.'}`
+                : 'Notch replies disabled. Pending requests return to your agent.',
+          })
+          return
+        }
         if (action === 'install' || action === 'install-unverified')
           await window.buddy.installIntegration(harness, action === 'install-unverified')
         else await window.buddy.removeIntegration(harness)
@@ -150,6 +169,54 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                           : 'Ready. Waiting for the first session event.'}
                     </p>
                   )}
+                  {installed && (
+                    <div className="mt-4 rounded-xl border border-border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-medium">Reply from the notch</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Approvals and structured questions.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant={harness.controls ? 'outline' : 'default'}
+                          disabled={
+                            pending !== null ||
+                            !snapshot.tracking.available ||
+                            (!harness.controls && !harness.canInstall)
+                          }
+                          onClick={() =>
+                            void act(
+                              harness.controls ? 'disable-controls' : 'enable-controls',
+                              harness.id,
+                            )
+                          }
+                        >
+                          {harness.controls ? <Check /> : null}
+                          {harness.controls ? 'Disable replies' : 'Enable replies'}
+                        </Button>
+                      </div>
+                      <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                        {harness.controls
+                          ? 'Enabled. Buddy shows commands and questions only while they await your response.'
+                          : 'Review each request and allow once, deny, or answer. Your agent’s existing permission rules still apply.'}
+                      </p>
+                      {harness.id === 'codex' && harness.controls && (
+                        <p
+                          className={`mt-2 flex items-center gap-2 text-xs ${harness.controlsConnection === 'connected' ? 'text-success' : 'text-muted-foreground'}`}
+                          role="status"
+                        >
+                          {harness.controlsConnection === 'connected' ? (
+                            <Check size={12} />
+                          ) : harness.controlsConnection === 'connecting' ? (
+                            <LoaderCircle size={12} className="animate-spin" />
+                          ) : null}
+                          {harness.controlsMessage}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="mt-4 flex gap-2">
                     {!installed && !(harness.canInstallUnverified && !harness.canInstall) && (
                       <Button
@@ -200,9 +267,14 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
       <details className="mt-6 text-xs leading-6 text-muted-foreground">
         <summary className="cursor-pointer font-medium text-foreground">What Buddy tracks</summary>
         <p className="mt-2">
-          Session names, IDs, project paths, activity timestamps and tool names. Your prompts, code
-          and conversations stay with your agent. Setup preserves your existing settings and saves a
-          backup.
+          Session names, IDs, project paths, activity timestamps and tool names. Observation does
+          not collect your prompts, tool outputs or conversations. Setup preserves your existing
+          settings and saves a backup.
+        </p>
+        <p className="mt-2">
+          With notch replies enabled, pending tool arguments and structured questions are shown
+          locally in Buddy. They and your answers are kept in memory, then discarded when the
+          request ends.
         </p>
         <p className="mt-2">
           Observers run on this Mac. Desktop and IDE clients need to load the same hooks or plugin;

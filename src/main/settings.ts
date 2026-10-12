@@ -38,6 +38,15 @@ export class ProfileSettings {
     )
     this.write({ ...this.data, unverifiedVersions: { ...versions, [harness]: version } })
   }
+  controlsEnabled(harness: HarnessId): boolean {
+    return Array.isArray(this.data.controls) && this.data.controls.includes(harness)
+  }
+  setControls(harness: HarnessId, enabled: boolean): void {
+    const controls = HARNESS_IDS.filter((id) =>
+      id === harness ? enabled : this.controlsEnabled(id),
+    )
+    this.write({ ...this.data, controls })
+  }
   private write(data: Record<string, unknown>): void {
     if (this.damaged)
       throw new Error('Buddy settings are unreadable; existing settings were left unchanged')

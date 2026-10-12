@@ -8,6 +8,7 @@ import {
   safeActualBounds,
   shelfBounds,
 } from './display-geometry'
+import { COMPLETION_NOTICE_MS, notchRecords } from '../shared/sessions'
 
 interface OverlayHost {
   getState(): OverlayState
@@ -32,6 +33,8 @@ export class OverlayController {
   private sessions: readonly SessionRecord[] = []
   private hoveringAt: number | null = null
   private hoverSuppressed = false
+  private inputActive = false
+  private completionTimer: ReturnType<typeof setTimeout> | null = null
   private readonly onDisplayChange = (): void => this.invalidate()
   private readonly onSuspend = (): void => {
     this.suspended = true
@@ -90,12 +93,38 @@ export class OverlayController {
 
   setLiveSessions(sessions: readonly SessionRecord[]): void {
     this.sessions = sessions
-    if (!sessions.length && this.host.getState().expanded) this.update({ expanded: false })
+    if (this.completionTimer) clearTimeout(this.completionTimer)
+    const deadlines = sessions
+      .filter((item) => item.status === 'completed')
+      .map((item) => item.statusChangedAt + COMPLETION_NOTICE_MS)
+      .filter((at) => at > Date.now())
+    if (deadlines.length)
+      this.completionTimer = setTimeout(
+        () => this.setLiveSessions(this.sessions),
+        Math.min(...deadlines) - Date.now() + 1,
+      )
+    if (!notchRecords(sessions).length && this.host.getState().expanded)
+      this.update({ expanded: false })
     this.apply()
+  }
+
+  setInputActive(enabled: boolean): void {
+    if (
+      !this.window ||
+      this.window.isDestroyed() ||
+      (enabled && (!this.host.getState().expanded || !this.host.getState().visible))
+    )
+      return
+    this.inputActive = enabled
+    this.window.setFocusable(enabled)
+    if (enabled) this.window.focus()
+    else this.window.blur()
+    this.leavingAt = null
   }
 
   expand(expanded: boolean): void {
     if (!this.sessions.length) return
+    if (!expanded && this.inputActive) this.setInputActive(false)
     this.update({ expanded })
     this.leavingAt = null
     this.hoveringAt = null
@@ -171,7 +200,7 @@ export class OverlayController {
       this.suspended ||
       this.disposed ||
       this.rendererFailures >= 3 ||
-      !this.sessions.length ||
+      !notchRecords(this.sessions).length ||
       state.geometry !== 'ready'
     ) {
       this.hide()
@@ -199,6 +228,11 @@ export class OverlayController {
     if (!this.window || this.window.isDestroyed()) {
       if (this.retry && this.rendererFailures) return
       const window = this.host.createWindow()
+      window.on('blur', () => {
+        this.inputActive = false
+        if (!window.isDestroyed()) window.setFocusable(false)
+        this.leavingAt = null
+      })
       this.window = window
       this.ready = false
       window.once('ready-to-show', () => {
@@ -273,12 +307,13 @@ export class OverlayController {
       else if (Date.now() - this.hoveringAt > 350) this.expand(true)
       return
     }
-    if (inside) this.leavingAt = null
+    if (inside || this.inputActive) this.leavingAt = null
     else if (this.leavingAt === null) this.leavingAt = Date.now()
     else if (Date.now() - this.leavingAt > 1200) this.expand(false)
   }
 
   private hide(): void {
+    if (this.inputActive) this.setInputActive(false)
     if (this.polling) clearInterval(this.polling)
     this.polling = null
     this.leavingAt = null
@@ -303,6 +338,7 @@ export class OverlayController {
     this.generation++
     this.probe?.abort()
     this.clearTimers()
+    if (this.completionTimer) clearTimeout(this.completionTimer)
     this.hide()
     this.window?.destroy()
     globalShortcut.unregister('CommandOrControl+Shift+Space')

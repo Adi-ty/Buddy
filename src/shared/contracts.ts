@@ -14,6 +14,9 @@ export interface HarnessCatalogEntry {
   connection: 'not-connected' | 'configured' | 'observed' | 'stale'
   installation: 'not-checked' | 'installed' | 'not-found'
   observer: 'not-installed' | 'installed' | 'incomplete'
+  controls?: boolean
+  controlsConnection?: 'disabled' | 'connecting' | 'connected' | 'unavailable'
+  controlsMessage?: string
   version?: string
   canInstall?: boolean
   setup?: string
@@ -84,7 +87,7 @@ export interface SessionActivity {
 export interface SessionRecord extends AvatarPreview {
   id: string
   providerSessionId: string
-  source: 'hooks' | 'plugin'
+  source: 'hooks' | 'plugin' | 'app-server'
   client: 'unknown'
   name: string
   project: string
@@ -106,6 +109,7 @@ export interface BuddySnapshot {
   coverage: 'not-connected' | 'partial'
   sessions: readonly SessionRecord[]
   history: readonly SessionRecord[]
+  requests?: readonly AgentRequest[]
   tracking: {
     available: boolean
     phase: 'starting' | 'running' | 'paused' | 'unavailable'
@@ -140,7 +144,37 @@ export interface BuddyAPI {
   refreshIntegrations(): Promise<void>
   sessionAction(id: string, action: SessionAction): Promise<void>
   clearHistory(): Promise<void>
+  setIntegrationControls(harness: HarnessId, enabled: boolean): Promise<void>
+  respondToRequest(id: string, response: AgentResponse): Promise<void>
+  setOverlayInput(enabled: boolean): Promise<void>
 }
+
+export interface AgentQuestion {
+  text: string
+  header: string
+  multiple: boolean
+  custom: boolean
+  options: readonly { label: string; description: string }[]
+}
+export interface AgentRequest {
+  id: string
+  sessionId: string
+  harness: HarnessId
+  kind: 'permission' | 'question'
+  tool: string | null
+  details: string
+  questions: readonly AgentQuestion[]
+  createdAt: number
+  expiresAt: number
+  submitting: boolean
+  error: string | null
+  allowedDecisions?: readonly ('allow' | 'reject')[]
+  allowLabel?: string
+  mirrored?: boolean
+}
+export type AgentResponse =
+  | { decision: 'allow' | 'reject' | 'native' }
+  | { answers: readonly (readonly string[])[] }
 
 export const IPC = {
   snapshot: 'buddy:get-snapshot',
@@ -156,4 +190,7 @@ export const IPC = {
   refreshIntegrations: 'buddy:refresh-integrations',
   sessionAction: 'buddy:session-action',
   clearHistory: 'buddy:clear-history',
+  integrationControls: 'buddy:integration-controls',
+  respondToRequest: 'buddy:respond-to-request',
+  overlayInput: 'buddy:overlay-input',
 } as const

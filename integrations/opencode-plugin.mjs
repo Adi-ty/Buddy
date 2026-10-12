@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { report } from './reporter.mjs'
+import { connectControls } from './control-client.mjs'
+import { dirname, join } from 'node:path'
 
 // The installer replaces this one placeholder with Buddy's private descriptor.
 const configPath = '__BUDDY_BRIDGE_CONFIG__'
@@ -14,6 +16,133 @@ export default async function BuddyPlugin({ client, directory }) {
   let recovering = false
   let reconcileAgain = false
   let lastStamp = 0
+  let controls
+  let controlConnected = false
+  let controlEnabled = false
+  const publishedRequests = new Map()
+  const responsePending = new Set()
+  const nativeRequests = new Set()
+  const publishRequest = (p, kind) => {
+    if (
+      !controlEnabled ||
+      nativeRequests.has(p.id) ||
+      typeof p.id !== 'string' ||
+      typeof p.sessionID !== 'string'
+    )
+      return
+    const details =
+      kind === 'permission'
+        ? JSON.stringify(
+            { permission: p.permission, patterns: p.patterns, metadata: p.metadata },
+            null,
+            2,
+          )
+        : 'Your agent needs an answer to continue.'
+    if (!details || details.length > 64_000) return
+    const request = {
+      op: 'request',
+      id: p.id,
+      sessionId: p.sessionID,
+      kind,
+      details,
+      cwd: directory,
+      tool: kind === 'permission' ? p.permission : null,
+      ...(kind === 'question'
+        ? {
+            questions: (p.questions ?? []).map((q) => ({
+              text: q.question,
+              header: q.header ?? '',
+              multiple: q.multiple === true,
+              custom: q.custom !== false,
+              options: (q.options ?? []).map((o) => ({
+                label: o.label,
+                description: o.description ?? '',
+              })),
+            })),
+          }
+        : {}),
+    }
+    publishedRequests.set(p.id, { sessionId: p.sessionID, kind })
+    controls?.send(request)
+  }
+  const answerRequest = async (message) => {
+    const context = publishedRequests.get(message.id)
+    if (!context || responsePending.has(message.id)) return
+    if (message.response?.decision === 'native') {
+      nativeRequests.add(message.id)
+      controls?.send({ op: 'result', id: message.id, ok: true })
+      return
+    }
+    responsePending.add(message.id)
+    const controller = new AbortController()
+    const deadline = setTimeout(() => controller.abort(), 5000)
+    try {
+      // Recheck at the actual live authority before a mutation. A terminal
+      // answer/cancellation may have won since the user opened the notch.
+      const pending = await client._client.get({
+        url: `/${context.kind}`,
+        query: { directory },
+        signal: controller.signal,
+      })
+      if (
+        !Array.isArray(pending.data) ||
+        !pending.data.some((p) => p.id === message.id && p.sessionID === context.sessionId)
+      ) {
+        controls?.send({ op: 'resolved', id: message.id })
+        return
+      }
+      const permission = context.kind === 'permission'
+      const response = message.response
+      const body = permission
+        ? { reply: response.decision === 'allow' ? 'once' : 'reject' }
+        : { answers: response.answers }
+      if (
+        (!permission && !Array.isArray(response.answers)) ||
+        (permission && !['allow', 'reject'].includes(response.decision))
+      )
+        throw new Error('Invalid response')
+      const result = await client._client.post({
+        url: `/${context.kind}/${encodeURIComponent(message.id)}/reply`,
+        query: { directory },
+        body,
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      })
+      if (result.error || result.data !== true) throw new Error('Reply was not acknowledged')
+      controls?.send({ op: 'result', id: message.id, ok: true })
+      publishedRequests.delete(message.id)
+      void reconcile()
+    } catch {
+      controls?.send({ op: 'result', id: message.id, ok: false })
+      void reconcile()
+    } finally {
+      clearTimeout(deadline)
+      responsePending.delete(message.id)
+    }
+  }
+  const connectControlChannel = () => {
+    if (disposed || controlConnected || typeof client._client?.post !== 'function') return
+    controlConnected = true
+    controls = connectControls(
+      join(dirname(configPath), 'controls.json'),
+      'opencode',
+      (message) => {
+        if (disposed) return
+        if (message.op === 'ready') {
+          const changed = controlEnabled !== message.enabled
+          controlEnabled = message.enabled === true
+          if (changed && controlEnabled) void reconcile()
+        } else if (message.op === 'reply') void answerRequest(message)
+        else if (message.op === 'retired') publishedRequests.delete(message.id)
+        else if (message.op === 'disabled') controlEnabled = false
+      },
+      () => {
+        controlConnected = false
+        controlEnabled = false
+        publishedRequests.clear()
+      },
+    )
+  }
   const send = (event, p, extra = {}) => {
     const info = p.info
     const sessionId = p.sessionID ?? info?.id
@@ -132,7 +261,7 @@ export default async function BuddyPlugin({ client, directory }) {
           }),
           client._client.get({ url: '/question', query: { directory }, signal: controller.signal }),
         ])
-        if (Array.isArray(permissions.data) && Array.isArray(questions.data))
+        if (Array.isArray(permissions.data) && Array.isArray(questions.data)) {
           requests = [
             ...permissions.data.map((p) => ({
               sessionId: p.sessionID,
@@ -141,6 +270,27 @@ export default async function BuddyPlugin({ client, directory }) {
             })),
             ...questions.data.map((p) => ({ sessionId: p.sessionID, id: p.id, kind: 'question' })),
           ]
+          if (controlEnabled) {
+            const ids = new Set(requests.map((p) => p.id))
+            for (const id of nativeRequests) if (!ids.has(id)) nativeRequests.delete(id)
+            for (const [id, context] of publishedRequests)
+              if (
+                (generations.get(context.sessionId) ?? 0) !== (baseline.get(context.sessionId) ?? 0)
+              )
+                ids.add(id)
+            for (const id of publishedRequests.keys())
+              if (!ids.has(id)) {
+                controls?.send({ op: 'resolved', id })
+                publishedRequests.delete(id)
+              }
+            for (const p of permissions.data)
+              if ((generations.get(p.sessionID) ?? 0) === (baseline.get(p.sessionID) ?? 0))
+                publishRequest(p, 'permission')
+            for (const p of questions.data)
+              if ((generations.get(p.sessionID) ?? 0) === (baseline.get(p.sessionID) ?? 0))
+                publishRequest(p, 'question')
+          }
+        }
       }
       if (statuses && typeof statuses === 'object') {
         const sessions = new Set([
@@ -194,6 +344,12 @@ export default async function BuddyPlugin({ client, directory }) {
   }
   const timer = setInterval(() => void reconcile(), 30_000)
   timer.unref?.()
+  const controlTimer = setInterval(() => {
+    connectControlChannel()
+    controls?.send({ op: 'ping' })
+  }, 15_000)
+  controlTimer.unref?.()
+  connectControlChannel()
   void reconcile()
   const events = new Set([
     'session.created',
@@ -220,6 +376,26 @@ export default async function BuddyPlugin({ client, directory }) {
           else deleted.delete(sessionId)
         }
         send(event.type, event.properties ?? {}, { id: event.id })
+        if (['permission.asked', 'permission.v2.asked', 'question.asked'].includes(event.type))
+          publishRequest(
+            event.properties ?? {},
+            event.type === 'question.asked' ? 'question' : 'permission',
+          )
+        if (
+          [
+            'permission.replied',
+            'permission.v2.replied',
+            'question.replied',
+            'question.rejected',
+          ].includes(event.type)
+        ) {
+          const id = event.properties?.requestID ?? event.properties?.permissionID
+          if (typeof id === 'string') {
+            controls?.send({ op: 'resolved', id })
+            publishedRequests.delete(id)
+            nativeRequests.delete(id)
+          }
+        }
         if (event.type === 'session.deleted') {
           const id = event.properties?.sessionID ?? event.properties?.info?.id
           known.delete(id)
@@ -246,6 +422,8 @@ export default async function BuddyPlugin({ client, directory }) {
     dispose: async () => {
       disposed = true
       clearInterval(timer)
+      clearInterval(controlTimer)
+      controls?.close()
     },
   }
 }

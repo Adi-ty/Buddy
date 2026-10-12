@@ -293,6 +293,7 @@ export class SessionStore {
           seen: [],
         }
     record.lastSeen = receivedAt
+    if (event.source === 'app-server') record.source = 'app-server'
     record.lastEventAt = event.at
     record.seen = [...record.seen.slice(-127), event.id]
     if (event.action !== 'metadata') {
@@ -303,7 +304,12 @@ export class SessionStore {
       record.cwd = event.cwd
       record.project = basename(event.cwd) || event.cwd
     }
-    const name = this.lookupName(event.harness, event.sessionId, record.cwd) ?? event.name
+    const name =
+      event.source === 'app-server' && event.name
+        ? event.name
+        : record.source === 'app-server' && record.nameSource === 'harness'
+          ? null
+          : (this.lookupName(event.harness, event.sessionId, record.cwd) ?? event.name)
     if (name) {
       record.name = name
       record.nameSource = 'harness'
@@ -428,11 +434,46 @@ export class SessionStore {
     return changed
   }
 
+  resolveControlAttention(
+    id: string,
+    requestId: string,
+    tool: string | null,
+    turnId: string | null,
+    allowed: boolean,
+  ): void {
+    const record = this.records.get(id)
+    if (
+      !record ||
+      record.presence !== 'observed' ||
+      ['completed', 'interrupted'].includes(record.status) ||
+      (turnId && record.turnId && turnId !== record.turnId)
+    )
+      return
+    const attention = record.attention.filter(
+      (item) =>
+        item.id !== requestId &&
+        !(
+          item.kind === 'permission' &&
+          item.id === (item.tool ?? 'uncorrelated') &&
+          (item.tool === tool || item.tool === null)
+        ),
+    )
+    this.records.set(id, {
+      ...record,
+      attention,
+      status: attention.length ? 'needs-attention' : allowed ? 'working' : 'unknown',
+      statusChangedAt: Date.now(),
+      lastEventAt: Math.max(record.lastEventAt, Date.now()),
+    })
+    this.scheduleFlush()
+  }
+
   refreshNames(): boolean {
     if (this.message) return false
     const next = new Map(this.records)
     let changed = false
     for (const [id, record] of next) {
+      if (record.source === 'app-server' && record.nameSource === 'harness') continue
       const name = this.lookupName(record.harness, record.providerSessionId, record.cwd)
       if (name && (name !== record.name || record.nameSource !== 'harness')) {
         next.set(id, { ...record, name, nameSource: 'harness' })
@@ -526,7 +567,7 @@ function validRecord(r: StoredSession): boolean {
     textField(r.seed) !== null &&
     isHarnessId(r.harness) &&
     r.id === key(r.harness, r.providerSessionId) &&
-    ['hooks', 'plugin'].includes(r.source) &&
+    ['hooks', 'plugin', 'app-server'].includes(r.source) &&
     r.client === 'unknown' &&
     textField(r.name) !== null &&
     (r.nameSource === undefined || ['harness', 'fallback'].includes(r.nameSource)) &&

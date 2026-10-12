@@ -6,7 +6,6 @@ import type { BuddySnapshot } from '@shared/contracts'
 import { SessionAvatar } from '@/components/session-avatar'
 import { SessionList } from '@/components/session-list'
 import { IntegrationsPage } from '@/components/integrations-page'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { OverlayView } from '@/components/overlay-view'
@@ -16,6 +15,7 @@ import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from '@/components/ui/notice'
 import { sessionFamilies } from '@shared/session-families'
+import { useSessionFilters } from '@/lib/session-filters'
 
 const navigation = [
   { path: '/sessions', label: 'Sessions', icon: Layers3 },
@@ -166,6 +166,7 @@ function Dashboard() {
 
 function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const navigate = useNavigate()
+  const filters = useSessionFilters(false)
   const connected = snapshot.harnesses.filter((item) => item.observer === 'installed')
   const families = sessionFamilies(snapshot.sessions, [...snapshot.sessions, ...snapshot.history])
   const sessions = families.map((family) => family.summary)
@@ -197,22 +198,32 @@ function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
       />
       {snapshot.sessions.length > 0 ? (
         <>
-          <div className="mb-5 flex items-center gap-2">
-            <Badge variant="outline">{sessions.length} observed</Badge>
-            {subagents > 0 && (
-              <Badge variant="outline">
-                {subagents} {subagents === 1 ? 'subagent' : 'subagents'}
-              </Badge>
-            )}
-            <Badge variant={working ? 'working' : 'outline'}>{working} working</Badge>
-            <Badge variant={finished ? 'success' : 'outline'}>{finished} finished</Badge>
-            {attention > 0 && <Badge variant="attention">{attention} need attention</Badge>}
-            {errors > 0 && (
-              <Badge variant="error">
-                {errors} {errors === 1 ? 'error' : 'errors'}
-              </Badge>
-            )}
+          <div className="session-status-filters" role="group" aria-label="Quick status filters">
+            {[
+              { status: 'all', label: 'All sessions', count: sessions.length },
+              { status: 'working', label: 'Working', count: working },
+              { status: 'needs-attention', label: 'Need you', count: attention },
+              { status: 'completed', label: 'Finished', count: finished },
+              { status: 'error', label: 'Errors', count: errors },
+            ].map((item) => (
+              <button
+                key={item.status}
+                className="session-status-filter"
+                data-status={item.status}
+                aria-pressed={filters.status === item.status}
+                onClick={() => filters.update({ status: item.status })}
+              >
+                <span>{item.label}</span>
+                <strong>{item.count}</strong>
+              </button>
+            ))}
           </div>
+          {subagents > 0 && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              Includes {subagents} {subagents === 1 ? 'subagent' : 'subagents'} inside their parent
+              sessions.
+            </p>
+          )}
           <SessionList snapshot={snapshot} />
         </>
       ) : (

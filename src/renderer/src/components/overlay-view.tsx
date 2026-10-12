@@ -1,7 +1,13 @@
 import { harnessFor } from '@/lib/harness'
 import { useEffect, useState } from 'react'
 import { ArrowUpRight, ChevronDown, ChevronUp } from 'lucide-react'
-import { notchSignal, sessionNotification, signalRevision, sessionLastTool } from '@shared/sessions'
+import {
+  notchRecords,
+  notchSignal,
+  sessionNotification,
+  signalRevision,
+  sessionLastTool,
+} from '@shared/sessions'
 import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
 import { useSessionClock } from '@/lib/use-session-clock'
 import { SessionAvatar } from './session-avatar'
@@ -11,9 +17,10 @@ import { Button } from './ui/button'
 import { cn } from '@/lib/utils'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from './ui/notice'
-import { sessionFamilies } from '@shared/session-families'
+import { familyInputSession, sessionFamilies } from '@shared/session-families'
 import { SubagentList } from './subagent-list'
 import type { BuddySnapshot } from '@shared/contracts'
+import { SessionRequests } from './session-requests'
 
 export function OverlayView() {
   const { snapshot, failed } = useBuddySnapshot()
@@ -27,9 +34,12 @@ export function OverlayView() {
 export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
   const now = useSessionClock(snapshot.sessions, snapshot.overlay.expanded)
   const { notice, setNotice } = useNotice()
-  const [selection, setSelection] = useState<string | null>(null)
+  const [selection, setSelection] = useState<{
+    familyId: string
+    sessionId: string | null
+  } | null>(null)
   const families = sessionFamilies(
-    snapshot.sessions,
+    notchRecords(snapshot.sessions, now),
     [...snapshot.sessions, ...snapshot.history],
     now,
   )
@@ -99,9 +109,12 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
             <div className="space-y-2">
               {families.map((family) => {
                 const session = family.root
-                const selected = [session, ...family.descendants].find(
-                  (item) => item.id === selection,
-                )
+                const selected =
+                  selection?.familyId === session.id
+                    ? ([session, ...family.descendants].find(
+                        (item) => item.id === selection.sessionId,
+                      ) ?? familyInputSession(family, snapshot.requests))
+                    : undefined
                 return (
                   <SessionRow
                     key={session.id}
@@ -112,52 +125,35 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
                     subagentCount={family.descendants.length}
                     compact
                     now={now}
-                    onSelect={() => setSelection(session.id === selection ? null : session.id)}
+                    onSelect={() =>
+                      setSelection(selected ? null : { familyId: session.id, sessionId: null })
+                    }
                   >
                     {selected && (
                       <>
+                        {selected.id !== session.id && (
+                          <p className="mt-2 truncate font-medium" title={selected.name}>
+                            {selected.name}
+                          </p>
+                        )}
+                        <SessionRequests session={selected} snapshot={snapshot} overlay />
+                        <p className="mt-3 break-all text-muted-foreground">
+                          {selected.cwd ?? selected.project}
+                        </p>
+                        <p className="mt-1.5">
+                          {sessionLastTool(selected)
+                            ? `Last tool: ${sessionLastTool(selected)}`
+                            : 'No tool activity yet'}
+                        </p>
                         <SubagentList
                           root={session}
                           sessions={family.descendants}
                           snapshot={snapshot}
-                          selectedId={selection}
-                          onSelect={setSelection}
+                          selectedId={selected.id}
+                          onSelect={(id) => setSelection({ familyId: session.id, sessionId: id })}
                           now={now}
+                          collapsible
                         />
-                        <p className="mt-2 truncate font-medium" title={selected.name}>
-                          {selected.name}
-                        </p>
-                        <p className="break-all text-muted-foreground">
-                          {selected.cwd ?? selected.project}
-                        </p>
-                        <p className="mt-1.5">
-                          {selected.attention.length
-                            ? 'Respond in your agent’s window.'
-                            : sessionLastTool(selected)
-                              ? `Last tool: ${sessionLastTool(selected)}`
-                              : 'No tool activity yet'}
-                        </p>
-                        {selected.status === 'working' && (
-                          <p className="mt-1.5 text-muted-foreground">
-                            Working observed{' '}
-                            {Math.max(0, Math.floor((now - selected.statusChangedAt) / 1000))}s ago.{' '}
-                            {(() => {
-                              const activity = [...selected.activity]
-                                .reverse()
-                                .find(
-                                  (item) =>
-                                    ![
-                                      'buddy.reconcile',
-                                      'session.updated',
-                                      'session.created',
-                                    ].includes(item.event),
-                                )
-                              return activity?.tool
-                                ? `${activity.event === 'PreToolUse' ? 'Tool started' : 'Tool activity'}: ${activity.tool} · ${Math.max(0, Math.floor((now - activity.at) / 1000))}s ago.`
-                                : ''
-                            })()}
-                          </p>
-                        )}
                       </>
                     )}
                   </SessionRow>

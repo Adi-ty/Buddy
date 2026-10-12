@@ -32,13 +32,15 @@
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-router-dom": "7.14.1",
-    "tailwind-merge": "3.5.0"
+    "tailwind-merge": "3.5.0",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.2.2",
     "@types/node": "24.10.1",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
+    "@types/ws": "8.18.2",
     "@vitejs/plugin-react": "5.1.2",
     "electron": "42.11.4",
     "electron-builder": "26.17.0",

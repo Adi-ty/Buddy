@@ -11,9 +11,10 @@ import { useSessionFilters } from '@/lib/session-filters'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from './ui/notice'
 import type { SessionAction } from '@shared/contracts'
-import { sessionFamilies, relativeTime } from '@shared/session-families'
+import { familyInputSession, sessionFamilies, relativeTime } from '@shared/session-families'
 import { SubagentList } from './subagent-list'
 import { sessionPage, nextSessionRow } from '@/lib/session-list-view'
+import { SessionRequests } from './session-requests'
 
 const labels = sessionStatusLabels
 const projectKey = (session: SessionRecord): string => session.cwd ?? `project:${session.project}`
@@ -45,11 +46,13 @@ export function SessionList({
   const listRef = useRef<HTMLDivElement>(null)
   const pendingFocus = useRef<string | null>(null)
   const [focusId, setFocusId] = useState<string | null>(null)
-  const [selection, setSelection] = useState<string | null>(
-    () => records.find((item) => item.status === 'needs-attention')?.id ?? null,
-  )
+  const [selection, setSelection] = useState<string | null>(() => {
+    const family = families.find((item) => item.summary.status === 'needs-attention')
+    return family ? familyInputSession(family, snapshot.requests).id : null
+  })
   const [page, setPage] = useState(0)
   const [showFilters, setShowFilters] = useState(false)
+  useEffect(() => setPage(0), [harness, project, status, recent, search])
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 15_000)
@@ -58,14 +61,17 @@ export function SessionList({
   const matches = (item: SessionRecord) =>
     (harness === 'all' || item.harness === harness) &&
     (project === 'all' || projectKey(item) === project) &&
-    (status === 'all' || item.status === status) &&
     (!search.trim() ||
       [item.name, item.project, item.cwd].some((value) =>
         value?.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
       )) &&
     (recent === 'all' || now - item.lastSeen < Number(recent))
   const matched = families
-    .filter((family) => [family.summary, ...family.members].some(matches))
+    .filter(
+      (family) =>
+        (status === 'all' || family.summary.status === status) &&
+        [family.summary, ...family.members].some(matches),
+    )
     .map((family) => family.summary)
   const {
     ordered: sessions,
@@ -104,7 +110,7 @@ export function SessionList({
     ) ?? families.find((family) => family.root.id === visible[0]?.id)
   const selected = selectedFamily
     ? ([selectedFamily.root, ...selectedFamily.descendants].find((item) => item.id === selection) ??
-      selectedFamily.root)
+      (history ? selectedFamily.root : familyInputSession(selectedFamily, snapshot.requests)))
     : undefined
   useEffect(() => {
     if (!pendingFocus.current) return
@@ -338,7 +344,13 @@ export function SessionList({
                           : -1
                       }
                       onFocus={() => setFocusId(item.id)}
-                      onSelect={() => setSelection(item.id)}
+                      onSelect={() =>
+                        setSelection(
+                          history
+                            ? item.id
+                            : familyInputSession(familyById.get(item.id)!, snapshot.requests).id,
+                        )
+                      }
                       now={signalNow}
                     >
                       {item.id === selectedFamily?.root.id && (
@@ -388,6 +400,7 @@ export function SessionList({
             <p className="mt-1 text-xs text-muted-foreground">
               {harnessFor(snapshot, selected.harness).name} · {labels[selected.status]}
             </p>
+            <SessionRequests session={selected} snapshot={snapshot} />
             <p className="mt-3 break-all text-xs text-muted-foreground">
               {selected.cwd ?? 'Project unavailable'}
             </p>
@@ -424,18 +437,6 @@ export function SessionList({
                   ? 'Session ended'
                   : `Last activity ${relativeTime(selected.lastSeen, now)}`}
             </p>
-            {selected.attention.length > 0 && (
-              <div className="mt-4 rounded-lg bg-attention/10 p-3 text-xs">
-                <p className="font-medium">Attention requested</p>
-                {selected.attention.map((a) => (
-                  <p key={a.id} className="mt-1">
-                    {a.kind === 'permission' ? 'Permission requested' : 'Question asked'}
-                    {a.tool ? ` · ${a.tool}` : ''}
-                  </p>
-                ))}
-                <p className="mt-2 text-muted-foreground">Respond in your agent’s window.</p>
-              </div>
-            )}
             <details className="mt-5 text-xs">
               <summary className="cursor-pointer text-muted-foreground">
                 Session details & activity

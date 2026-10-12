@@ -24,6 +24,9 @@ import { OverlayController } from './overlay'
 import { SessionStore } from './tracking/store'
 import { SessionNames } from './tracking/session-names'
 import { ObservationBridge } from './tracking/bridge'
+import { RequestBridge } from './tracking/requests'
+import { CodexAppServer } from './tracking/codex-app-server'
+import { normalizeObservation, type Observation } from './tracking/events'
 import { IntegrationManager, integrationAssets } from './tracking/integrations'
 import { ProfileSettings } from './settings'
 import { SessionNotifications } from './notifications'
@@ -53,6 +56,8 @@ let overlay: OverlayController | null = null
 let tray: Tray | null = null
 let store: SessionStore | null = null
 let bridge: ObservationBridge | null = null
+let requests: RequestBridge | null = null
+let codexServer: CodexAppServer | null = null
 let integrations: IntegrationManager | null = null
 let settings: ProfileSettings | null = null
 let notifications: SessionNotifications | null = null
@@ -323,13 +328,39 @@ function scheduleSessions(): void {
   }, 100)
 }
 
+function observeSession(event: Observation): void {
+  const before = store?.get(`${event.harness}:${event.sessionId}`) ?? null
+  if (store?.apply(event)) {
+    notifications?.observe(before, store.get(`${event.harness}:${event.sessionId}`))
+    scheduleSessions()
+  } else if (store?.message) scheduleSessions()
+}
+
 function publishSessions(): void {
   if (!store) return
   const records = store.snapshot()
-  notifications?.reconcileObserved(records.sessions)
+  requests?.reconcile(records.sessions)
+  const pending = [...(requests?.snapshot() ?? []), ...(codexServer?.snapshot() ?? [])]
+  const sessions = records.sessions.map((record) => {
+    const input = pending.filter((p) => p.sessionId === record.id)
+    return input.length
+      ? {
+          ...record,
+          status: 'needs-attention' as const,
+          statusChangedAt: Math.min(...input.map((p) => p.createdAt)),
+          attention: [
+            ...record.attention.filter((a) => !input.some((p) => p.id === a.id)),
+            ...input.map((p) => ({ id: p.id, kind: p.kind, tool: p.tool })),
+          ],
+        }
+      : record
+  })
+  notifications?.reconcileObserved(sessions)
   snapshot = {
     ...snapshot,
     ...records,
+    sessions,
+    requests: pending,
     coverage: records.sessions.length || records.history.length ? 'partial' : 'not-connected',
     tracking: {
       available: store.message === null,
@@ -352,6 +383,7 @@ function publishSessions(): void {
       const recent = records.sessions.some((record) => record.harness === entry.id)
       return {
         ...entry,
+        ...(entry.id === 'codex' ? codexServer?.state() : {}),
         lastEventAt: store?.lastEventAt(entry.id),
         connection: recent
           ? 'observed'
@@ -363,7 +395,7 @@ function publishSessions(): void {
       }
     }),
   }
-  overlay?.setLiveSessions(records.sessions)
+  overlay?.setLiveSessions(sessions)
   broadcastNow()
 }
 
@@ -373,6 +405,8 @@ async function refreshIntegrations(): Promise<void> {
   const harnesses = await integrations.refresh(snapshot.harnesses)
   // Keep display/session updates received while CLI detection was in flight.
   snapshot = { ...snapshot, harnesses }
+  const codex = harnesses.find((entry) => entry.id === 'codex')
+  codexServer?.configure(!!codex?.controls && codex.observer === 'installed')
   publishSessions()
   if (!store) broadcast()
 }
@@ -550,6 +584,10 @@ if (!app.requestSingleInstanceLock()) {
           try {
             if (install) await integrations.install(args[0] as HarnessId, args[1] === true)
             else integrations.remove(args[0] as HarnessId)
+            if (!install) {
+              requests?.cancel(args[0] as HarnessId)
+              if (args[0] === 'codex') codexServer?.configure(false)
+            }
             await refreshIntegrations()
           } finally {
             setupBusy = false
@@ -574,6 +612,41 @@ if (!app.requestSingleInstanceLock()) {
           writeText: (text) => clipboard.writeText(text),
           showItemInFolder: (path) => shell.showItemInFolder(path),
         })
+      })
+      ipcMain.handle(IPC.integrationControls, async (event, ...args: unknown[]) => {
+        trustedRequest(event, true)
+        if (args.length !== 2 || !isHarnessId(args[0]) || typeof args[1] !== 'boolean')
+          throw new Error('Invalid controls setting')
+        if (setupBusy || !integrations || !requests || !snapshot.tracking.available)
+          throw new Error('Integrations are busy or unavailable. Try again.')
+        setupBusy = true
+        try {
+          await integrations.setControls(args[0], args[1])
+          if (!args[1]) {
+            requests.cancel(args[0])
+            if (args[0] === 'codex') codexServer?.configure(false)
+          }
+          await refreshIntegrations()
+        } finally {
+          setupBusy = false
+        }
+      })
+      ipcMain.handle(IPC.respondToRequest, async (event, ...args: unknown[]) => {
+        trustedRequest(event)
+        if (args.length !== 2 || !requests || !snapshot.tracking.available)
+          throw new Error('Agent replies are unavailable.')
+        if (codexServer?.owns(args[0])) await codexServer.respond(args[0], args[1])
+        else await requests.respond(args[0], args[1])
+      })
+      ipcMain.handle(IPC.overlayInput, (event, ...args: unknown[]) => {
+        trustedRequest(event)
+        if (
+          event.sender === dashboard?.webContents ||
+          args.length !== 1 ||
+          typeof args[0] !== 'boolean'
+        )
+          throw new Error('Invalid notch input request')
+        overlay?.setInputActive(args[0])
       })
       ipcMain.handle(IPC.clearHistory, (event, ...args: unknown[]) => {
         trustedRequest(event, true)
@@ -609,12 +682,7 @@ if (!app.requestSingleInstanceLock()) {
         store.refreshNames()
         bridge = new ObservationBridge(profile, (event) => {
           try {
-            const id = `${event.harness}:${event.sessionId}`
-            const before = store?.get(id) ?? null
-            if (store?.apply(event)) {
-              notifications?.observe(before, store.get(id))
-              scheduleSessions()
-            } else if (store?.message) scheduleSessions()
+            observeSession(event)
           } catch (error) {
             console.error('Session persistence failed', error)
             publishSessions()
@@ -622,6 +690,59 @@ if (!app.requestSingleInstanceLock()) {
           }
         })
         await bridge.start()
+        requests = new RequestBridge(
+          profile,
+          (harness) => settings?.controlsEnabled(harness) ?? false,
+          scheduleSessions,
+          (context) => {
+            if (!store || store.message) throw new Error('Tracking is unavailable')
+            if (context.harness === 'opencode') return // Real plugin activity establishes presence.
+            const event = normalizeObservation({
+              version: 1,
+              id: `control-${context.sourceId}`,
+              harness: context.harness,
+              sessionId: context.providerId,
+              parentId: context.parentId,
+              turnId: context.turnId,
+              event: context.kind === 'permission' ? 'PermissionRequest' : 'PreToolUse',
+              tool: context.tool,
+              cwd: context.cwd,
+              at: Date.now(),
+            })
+            if (event) {
+              const before = store.get(`${context.harness}:${context.providerId}`)
+              if (store.apply(event)) {
+                const current = store.get(`${context.harness}:${context.providerId}`)
+                if (current)
+                  notifications?.observe(before, {
+                    ...current,
+                    status: 'needs-attention',
+                    attention: [
+                      ...current.attention,
+                      { id: context.sourceId, kind: context.kind, tool: context.tool },
+                    ],
+                  })
+              }
+            }
+          },
+          (context, decision) => {
+            if (decision !== 'native' && context.harness !== 'opencode')
+              store?.resolveControlAttention(
+                `${context.harness}:${context.providerId}`,
+                context.sourceId,
+                context.tool,
+                context.turnId,
+                decision === 'allow',
+              )
+          },
+        )
+        await requests.start()
+        codexServer = new CodexAppServer({
+          changed: scheduleSessions,
+          observed: observeSession,
+          resolved: (id, requestId, tool, turnId, allowed) =>
+            store?.resolveControlAttention(id, requestId, tool, turnId, allowed),
+        })
         publishSessions()
         expiryTimer = setInterval(() => {
           try {
@@ -638,6 +759,10 @@ if (!app.requestSingleInstanceLock()) {
       } catch (error) {
         console.error('Local tracking failed to start', error)
         bridge?.dispose()
+        requests?.dispose()
+        codexServer?.dispose()
+        codexServer = null
+        requests = null
         bridge = null
         store = null
         snapshot = {
@@ -659,6 +784,8 @@ if (!app.requestSingleInstanceLock()) {
         if (publishTimer) clearTimeout(publishTimer)
         if (broadcastTimer) clearTimeout(broadcastTimer)
         bridge?.dispose()
+        requests?.dispose()
+        codexServer?.dispose()
         store?.dispose()
         names?.dispose()
         notifications?.reset()

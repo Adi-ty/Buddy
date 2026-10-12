@@ -5,7 +5,7 @@ import { ADAPTERS } from './adapters'
 export interface Observation {
   id: string
   harness: HarnessId
-  source: 'hooks' | 'plugin'
+  source: 'hooks' | 'plugin' | 'app-server'
   sessionId: string
   parentId: string | null
   event: string

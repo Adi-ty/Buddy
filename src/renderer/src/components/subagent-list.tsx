@@ -2,6 +2,7 @@ import type { BuddySnapshot, SessionRecord } from '@shared/contracts'
 import { sessionStatusLabels } from '@shared/sessions'
 import { harnessFor } from '@/lib/harness'
 import { SessionRow } from './session-row'
+import { Button } from './ui/button'
 
 export function SubagentList({
   root,
@@ -10,6 +11,7 @@ export function SubagentList({
   selectedId,
   onSelect,
   now,
+  collapsible = false,
 }: {
   root: SessionRecord
   sessions: readonly SessionRecord[]
@@ -17,14 +19,21 @@ export function SubagentList({
   selectedId?: string | null
   onSelect: (id: string) => void
   now: number
+  collapsible?: boolean
 }) {
   if (!sessions.length) return null
   const active = sessions.filter((item) => item.presence === 'observed').length
-  return (
-    <section aria-label={`Subagents of ${root.name}`} className="space-y-2">
+  const content = (
+    <>
       <p className="text-[11px] text-muted-foreground">
-        Parent: {sessionStatusLabels[root.status]} · {sessions.length} subagents · {active} observed
+        Parent: {sessionStatusLabels[root.status]} · {sessions.length}{' '}
+        {sessions.length === 1 ? 'subagent' : 'subagents'} · {active} observed
       </p>
+      {selectedId && selectedId !== root.id && (
+        <Button variant="ghost" size="sm" onClick={() => onSelect(root.id)}>
+          View parent session
+        </Button>
+      )}
       {sessions.map((child) => (
         <div key={child.id} className="ml-2 border-l border-border pl-2">
           <SessionRow
@@ -52,6 +61,20 @@ export function SubagentList({
           )}
         </div>
       ))}
+    </>
+  )
+  return (
+    <section aria-label={`Subagents of ${root.name}`} className="space-y-2">
+      {collapsible ? (
+        <details className="mt-4">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground">
+            {sessions.length} {sessions.length === 1 ? 'subagent' : 'subagents'}
+          </summary>
+          <div className="mt-2 space-y-2">{content}</div>
+        </details>
+      ) : (
+        content
+      )}
     </section>
   )
 }

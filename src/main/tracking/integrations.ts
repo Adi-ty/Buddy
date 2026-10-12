@@ -53,6 +53,43 @@ export class IntegrationManager {
       )
     )
   }
+  private controlCommand(harness: HarnessId): string {
+    return `ELECTRON_RUN_AS_NODE=1 ${quote(process.execPath)} ${quote(join(this.profile, 'integrations/control-hook.mjs'))} ${quote(harness)} ${quote(join(this.profile, 'controls.json'))}`
+  }
+  private isControl(handler: unknown, harness: HarnessId): boolean {
+    return (
+      object(handler) &&
+      handler.type === 'command' &&
+      typeof handler.command === 'string' &&
+      handler.command.startsWith('ELECTRON_RUN_AS_NODE=1 ') &&
+      handler.command.includes(
+        ` ${quote(join(this.profile, 'integrations/control-hook.mjs'))} ${quote(harness)} ${quote(join(this.profile, 'controls.json'))}`,
+      )
+    )
+  }
+  async setControls(harness: HarnessId, enabled: boolean): Promise<void> {
+    if (!this.settings) throw new Error('Buddy settings are unavailable')
+    if (enabled && this.observerState(harness) !== 'installed')
+      throw new Error('Install the observer first.')
+    const detected = this.detected.get(harness)
+    if (
+      enabled &&
+      (!detected ||
+        detected.capable === false ||
+        (!detected.compatible && this.settings.allowedVersion(harness) !== detected.version))
+    )
+      throw new Error('Refresh integrations and verify this CLI version before enabling replies.')
+    const before = this.settings.controlsEnabled(harness)
+    this.settings.setControls(harness, enabled)
+    try {
+      this.syncAssets()
+      if (harness !== 'opencode')
+        this.updateHooks(harness, this.observerState(harness) !== 'not-installed')
+    } catch (error) {
+      this.settings.setControls(harness, before)
+      throw error
+    }
+  }
   private configuration(harness: HarnessId): {
     root: Record<string, unknown>
     original: string | null
@@ -92,6 +129,30 @@ export class IntegrationManager {
   }
   private events(harness: HarnessId): string[] {
     return ADAPTERS[harness].hookEvents()
+  }
+  private controlsConfigured(harness: HarnessId): boolean {
+    if (!this.settings?.controlsEnabled(harness)) return false
+    if (harness === 'opencode' || harness === 'codex') return true
+    try {
+      const hooks = this.configuration(harness).root.hooks as Record<string, unknown> | undefined
+      return ['PermissionRequest', ...(harness === 'claude-code' ? ['PreToolUse'] : [])].every(
+        (event) => {
+          const groups = hooks?.[event]
+          return (
+            Array.isArray(groups) &&
+            groups.some(
+              (group) =>
+                object(group) &&
+                (event !== 'PreToolUse' || group.matcher === 'AskUserQuestion') &&
+                Array.isArray(group.hooks) &&
+                group.hooks.some((handler) => this.isControl(handler, harness)),
+            )
+          )
+        },
+      )
+    } catch {
+      return false
+    }
   }
   private wrapper(harness: HarnessId): string {
     return `export { default } from ${JSON.stringify(pathToFileURL(join(this.profile, 'integrations', ADAPTERS[harness].pluginAsset!)).href)}\n`
@@ -156,6 +217,7 @@ export class IntegrationManager {
               ? 'verified'
               : 'unverified',
           observer,
+          controls: observer === 'installed' && this.controlsConfigured(entry.id),
           connection: observer === 'installed' ? 'configured' : 'not-connected',
           variants:
             'Local CLI is the setup target. Client identity is unknown in hook/plugin events. Desktop and IDE variants require separate live verification; remote/cloud sessions are not covered.',
@@ -209,6 +271,8 @@ export class IntegrationManager {
     mkdirSync(integrationDirectory, { recursive: true, mode: 0o700 })
     const reporter = readFileSync(join(this.bundled, 'reporter.mjs'), 'utf8')
     const assets: Record<string, string> = { 'reporter.mjs': reporter }
+    for (const name of ['control-client.mjs', 'control-hook.mjs'])
+      assets[name] = readFileSync(join(this.bundled, name), 'utf8')
     for (const adapter of HARNESSES)
       if (adapter.pluginAsset)
         assets[adapter.pluginAsset] = readFileSync(
@@ -230,6 +294,7 @@ export class IntegrationManager {
         unlinkSync(target)
       }
     } else this.updateHooks(harness, false)
+    if (this.settings?.controlsEnabled(harness)) this.settings.setControls(harness, false)
   }
   private updateHooks(harness: HarnessId, install: boolean): void {
     const { root, original } = this.configuration(harness)
@@ -244,7 +309,9 @@ export class IntegrationManager {
             (group) =>
               object(group) &&
               Array.isArray(group.hooks) &&
-              group.hooks.some((handler) => this.isOurs(handler, harness)),
+              group.hooks.some(
+                (handler) => this.isOurs(handler, harness) || this.isControl(handler, harness),
+              ),
           ),
       )
     )
@@ -259,11 +326,23 @@ export class IntegrationManager {
       const groups = existing
         .map((group) => ({
           ...group,
-          hooks: (group.hooks as unknown[]).filter((handler) => !this.isOurs(handler, harness)),
+          hooks: (group.hooks as unknown[]).filter(
+            (handler) => !this.isOurs(handler, harness) && !this.isControl(handler, harness),
+          ),
         }))
         .filter((group) => group.hooks.length)
       if (install)
         groups.push({ hooks: [{ type: 'command', command: this.command(harness), timeout: 1 }] })
+      if (
+        install &&
+        this.settings?.controlsEnabled(harness) &&
+        harness !== 'codex' &&
+        (event === 'PermissionRequest' || (harness === 'claude-code' && event === 'PreToolUse'))
+      )
+        groups.push({
+          ...(event === 'PreToolUse' ? { matcher: 'AskUserQuestion' } : {}),
+          hooks: [{ type: 'command', command: this.controlCommand(harness), timeout: 125 }],
+        })
       if (groups.length) hooks[event] = groups
       else delete hooks[event]
     }

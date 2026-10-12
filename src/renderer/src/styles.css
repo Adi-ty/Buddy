@@ -351,6 +351,108 @@
   }
 }
 
+.session-status-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.session-status-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+.session-status-filter:hover {
+  background: var(--secondary);
+}
+.session-status-filter[aria-pressed='true'] {
+  border-color: var(--primary);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+.session-status-filter strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+.session-status-filter[data-status='needs-attention'] strong {
+  color: var(--attention);
+}
+.session-status-filter[data-status='completed'] strong {
+  color: var(--success);
+}
+.session-status-filter[data-status='error'] strong {
+  color: var(--error);
+}
+.request-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.request-context {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 8px 0;
+  background: var(--secondary);
+}
+.request-details {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 10px 0 0;
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.question-option:hover {
+  background: var(--secondary);
+}
+.question-option:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--secondary);
+}
+.question-option input {
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+.question-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12px;
+}
+.session-status-filter:focus-visible,
+.question-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 @property --signal-sweep {
   syntax: '<angle>';
   initial-value: 0deg;

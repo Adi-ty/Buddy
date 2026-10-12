@@ -13,6 +13,13 @@ export const sessionStatusLabels: Record<SessionRecord['status'], string> = {
 export type SessionSignal = 'attention' | 'success' | 'error'
 export const COMPLETION_NOTICE_MS = 12_000
 
+export function notchRecords(records: readonly SessionRecord[], now = Date.now()): SessionRecord[] {
+  return records.filter(
+    (record) =>
+      record.status !== 'completed' || now - record.statusChangedAt < COMPLETION_NOTICE_MS,
+  )
+}
+
 export function sessionSignal(status: SessionRecord['status']): SessionSignal | undefined {
   if (status === 'needs-attention') return 'attention'
   if (status === 'completed') return 'success'
