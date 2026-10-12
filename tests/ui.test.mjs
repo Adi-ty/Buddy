@@ -616,6 +616,14 @@ test('attention without a request payload explains missing details instead of of
   )
   assert(codex.includes('Native replies aren’t connected to this session'))
   assert(!codex.includes('restart Codex'))
+  const subagent = renderToStaticMarkup(
+    createElement(SessionRequests, {
+      session: { ...session, harness: 'claude-code', parentId: 'claude-code:parent' },
+      snapshot: { ...current, harnesses: [{ ...harness, id: 'claude-code', controls: true }] },
+    }),
+  )
+  assert(subagent.includes('Answer in Claude Code'))
+  assert(!subagent.includes('restart'))
 })
 
 test('pagination groups the whole result and marks continuing days, keyboard movement crosses pages', () => {

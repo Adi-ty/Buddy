@@ -1,16 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import { connectControls } from './control-client.mjs'
+import { inputDigest } from './reporter.mjs'
 import { pathToFileURL } from 'node:url'
+
+// Claude shows its own prompt while this hook runs; the first answer wins.
+// Must match HOOK_WINDOW in src/main/tracking/requests.ts.
+const WINDOW = 600_000
+// Plan approval also picks a permission mode, which Buddy doesn't model.
+const NATIVE_ONLY = new Set(['ExitPlanMode', 'EnterPlanMode'])
 
 export function hookRequest(harness, input, id = randomUUID()) {
   // Older Codex configurations can still invoke this file. Never intercept its
   // approval: Buddy now mirrors the request from the native app-server stream.
   if (harness !== 'claude-code' || typeof input.session_id !== 'string') return null
-  const question =
-    harness === 'claude-code' &&
-    input.hook_event_name === 'PreToolUse' &&
-    input.tool_name === 'AskUserQuestion'
-  if (!question && input.hook_event_name !== 'PermissionRequest') return null
+  if (input.hook_event_name !== 'PermissionRequest' || NATIVE_ONLY.has(input.tool_name)) return null
+  // Claude awaits a background subagent's hooks before showing its prompt.
+  if (typeof input.agent_id === 'string' && input.agent_id !== input.session_id) return null
+  const question = input.tool_name === 'AskUserQuestion'
   if (
     question &&
     (!Array.isArray(input.tool_input?.questions) || !input.tool_input.questions.length)
@@ -20,21 +26,15 @@ export function hookRequest(harness, input, id = randomUUID()) {
     ? 'Your agent needs an answer to continue.'
     : JSON.stringify(input.tool_input ?? {}, null, 2)
   if (details.length > 64_000) return null // Never approve from a truncated preview.
-  const child =
-    harness === 'claude-code' &&
-    typeof input.agent_id === 'string' &&
-    input.agent_id !== input.session_id
-      ? input.agent_id
-      : null
   return {
     op: 'request',
     id,
     hook: true,
-    sessionId: child ?? input.session_id,
-    ...(child ? { parentId: input.session_id } : {}),
+    sessionId: input.session_id,
     cwd: input.cwd,
     turnId: input.turn_id,
     tool: input.tool_name,
+    inputDigest: inputDigest(input.tool_name, input.tool_input),
     kind: question ? 'question' : 'permission',
     details,
     ...(question
@@ -51,35 +51,23 @@ export function hookRequest(harness, input, id = randomUUID()) {
   }
 }
 
+const permissionOutput = (decision) => ({
+  hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
+})
+
 export function hookOutput(input, response) {
-  if (response.decision === 'native') return null
-  if (
-    input.hook_event_name === 'PermissionRequest' &&
-    ['allow', 'reject'].includes(response.decision)
-  )
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PermissionRequest',
-        decision: {
-          behavior: response.decision === 'allow' ? 'allow' : 'deny',
-          ...(response.decision === 'reject' ? { message: 'Denied by the user in Buddy.' } : {}),
-        },
-      },
-    }
-  if (input.tool_name === 'AskUserQuestion' && Array.isArray(response.answers))
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        updatedInput: {
-          ...input.tool_input,
-          questions: input.tool_input.questions,
-          answers: Object.fromEntries(
-            input.tool_input.questions.map((q, i) => [q.question, response.answers[i].join(', ')]),
-          ),
-        },
-      },
-    }
+  if (input.hook_event_name !== 'PermissionRequest') return null
+  if (input.tool_name === 'AskUserQuestion') {
+    if (!Array.isArray(response.answers)) return null
+    const answers = Object.fromEntries(
+      input.tool_input.questions.map((q, i) => [q.question, response.answers[i].join(', ')]),
+    )
+    // A bare allow is ignored for questions; answers travel in updatedInput.
+    return permissionOutput({ behavior: 'allow', updatedInput: { ...input.tool_input, answers } })
+  }
+  if (response.decision === 'allow') return permissionOutput({ behavior: 'allow' })
+  if (response.decision === 'reject')
+    return permissionOutput({ behavior: 'deny', message: 'Denied by the user in Buddy.' })
   return null
 }
 
@@ -89,6 +77,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let channel
   let finalOutput = null
   let published = false
+  let replied = false
   let finished = false
   const finish = (output) => {
     if (finished) return
@@ -99,7 +88,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (output) process.stdout.write(JSON.stringify(output) + '\n', () => process.exit(0))
     else process.exit(0)
   }
-  const deadline = setTimeout(() => finish(null), 121_000)
+  const deadline = setTimeout(() => finish(null), WINDOW + 1000)
   const heartbeat = setInterval(() => channel?.send({ op: 'ping' }), 15_000)
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', (chunk) => {
@@ -124,7 +113,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
               published = true
               channel.send(request)
             }
-          } else if (message.op === 'reply' && message.id === request.id) {
+          } else if (message.op === 'reply' && message.id === request.id && !replied) {
+            replied = true
             finalOutput = hookOutput(payload, message.response)
             // Ack only the response for this invocation. Other hooks retain their
             // authority and may still deny it under the harness's precedence rules.

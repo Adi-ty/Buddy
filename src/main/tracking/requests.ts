@@ -20,27 +20,34 @@ import type {
 } from '../../shared/contracts'
 import { isHarnessId } from '../../shared/harnesses'
 import { validateResponse } from './request-response'
+import type { Observation } from './events'
 import { runTask } from '../tasks'
 
 const object = (p: unknown): p is Record<string, unknown> =>
   !!p && typeof p === 'object' && !Array.isArray(p)
 const text = (p: unknown, limit: number): p is string =>
   typeof p === 'string' && p.length > 0 && p.length <= limit
+export const HOOK_WINDOW = 600_000
 interface Pending {
   view: AgentRequest
   owner: Socket
   sourceId: string
   providerId: string
-  parentId: string | null
   turnId: string | null
   timer: ReturnType<typeof setTimeout>
   response?: AgentResponse
   hook: boolean
+  inputDigest: string | null
+  toolUseId: string | null
+}
+interface ToolUse {
+  id: string
+  inputDigest: string
+  at: number
 }
 export interface RequestContext {
   harness: HarnessId
   providerId: string
-  parentId: string | null
   turnId: string | null
   tool: string | null
   sourceId: string
@@ -55,6 +62,7 @@ export class RequestBridge {
   private readonly server: Server
   private readonly sockets = new Set<Socket>()
   private readonly pending = new Map<string, Pending>()
+  private readonly toolUses = new Map<string, ToolUse[]>()
   private readonly socketPath: string
   constructor(
     private readonly profile: string,
@@ -117,7 +125,6 @@ export class RequestBridge {
     return {
       harness: p.view.harness,
       providerId: p.providerId,
-      parentId: p.parentId,
       turnId: p.turnId,
       sourceId: p.sourceId,
       tool: p.view.tool,
@@ -154,6 +161,47 @@ export class RequestBridge {
         this.finish(id, 'native')
       }
     }
+  }
+  // Claude's PermissionRequest lacks a tool-use ID; bind it through the
+  // preceding PreToolUse so the call's PostToolUse retires a native answer.
+  observeTool(event: Observation): void {
+    if (!this.enabled(event.harness)) return
+    const session = `${event.harness}:${event.sessionId}`
+    if (event.event === 'PreToolUse' && event.requestId && event.inputDigest) {
+      const unbound = [...this.pending.values()].find(
+        (p) => p.view.sessionId === session && !p.toolUseId && p.inputDigest === event.inputDigest,
+      )
+      if (unbound) {
+        unbound.toolUseId = event.requestId
+        return
+      }
+      const now = Date.now()
+      const recent = (this.toolUses.get(session) ?? []).filter((use) => now - use.at < HOOK_WINDOW)
+      this.toolUses.delete(session)
+      this.toolUses.set(
+        session,
+        [...recent, { id: event.requestId, inputDigest: event.inputDigest, at: now }].slice(-32),
+      )
+      if (this.toolUses.size > 64) this.toolUses.delete(this.toolUses.keys().next().value!)
+    } else if (
+      ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied'].includes(event.event) &&
+      event.requestId
+    ) {
+      const recent = this.toolUses.get(session)?.filter((use) => use.id !== event.requestId)
+      if (recent?.length) this.toolUses.set(session, recent)
+      else this.toolUses.delete(session)
+      for (const [id, p] of this.pending)
+        if (p.view.sessionId === session && p.toolUseId === event.requestId)
+          this.finish(id, 'native')
+    }
+  }
+  private claimToolUse(session: string, inputDigest: string | null): string | null {
+    const recent = this.toolUses.get(session) ?? []
+    const index = recent.findIndex((use) => use.inputDigest === inputDigest)
+    if (!inputDigest || index < 0) return null
+    const [use] = recent.splice(index, 1)
+    if (!recent.length) this.toolUses.delete(session)
+    return use!.id
   }
   async respond(id: unknown, response: unknown): Promise<void> {
     const p = typeof id === 'string' ? this.pending.get(id) : undefined
@@ -326,7 +374,7 @@ export class RequestBridge {
     }
     const id = randomUUID()
     const createdAt = Date.now()
-    const expiresAt = createdAt + (packet.hook === true ? 120_000 : 70_000)
+    const expiresAt = createdAt + (packet.hook === true ? HOOK_WINDOW : 70_000)
     const view: AgentRequest = {
       id,
       sessionId: `${harness}:${packet.sessionId}`,
@@ -345,9 +393,15 @@ export class RequestBridge {
       owner: socket,
       sourceId: packet.id,
       providerId: packet.sessionId,
-      parentId: typeof packet.parentId === 'string' ? packet.parentId.slice(0, 128) : null,
       turnId: typeof packet.turnId === 'string' ? packet.turnId.slice(0, 128) : null,
       hook: packet.hook === true,
+      inputDigest:
+        packet.hook === true &&
+        typeof packet.inputDigest === 'string' &&
+        /^[0-9a-f]{64}$/.test(packet.inputDigest)
+          ? packet.inputDigest
+          : null,
+      toolUseId: null,
       timer: setTimeout(() => {
         this.send(socket, { op: 'reply', id: packet.id, response: { decision: 'native' } })
         this.finish(id, 'native')
@@ -362,6 +416,7 @@ export class RequestBridge {
       clearTimeout(p.timer)
       throw error
     }
+    p.toolUseId = this.claimToolUse(view.sessionId, p.inputDigest)
     this.pending.set(id, p)
     this.changed()
   }
@@ -369,6 +424,7 @@ export class RequestBridge {
     for (const socket of this.sockets) socket.destroy()
     for (const p of this.pending.values()) clearTimeout(p.timer)
     this.pending.clear()
+    this.toolUses.clear()
     this.server.close()
     try {
       unlinkSync(this.socketPath)

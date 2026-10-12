@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { BuddySnapshot, SessionRecord } from '@shared/contracts'
+import type { BuddySnapshot, HarnessCatalogEntry, SessionRecord } from '@shared/contracts'
 import { harnessFor } from '@/lib/harness'
 import { RequestPanel } from './request-panel'
 
@@ -44,16 +44,25 @@ export function SessionRequests({
             : 'Needs your attention'}
       </p>
       <p className="mt-1 leading-5 text-muted-foreground">
-        {question && session.harness === 'codex'
-          ? harness.controlsConnection === 'connected'
-            ? 'Answer this question in Codex. Its question details are unavailable in Buddy.'
-            : 'Answer this question in Codex. Native replies aren’t connected to this session.'
-          : session.harness === 'codex' && harness.controls
-            ? 'Answer in Codex. Buddy shows replies when connected to the same local app server.'
-            : harness.controls
-              ? `The request details haven’t reached Buddy. Answer in ${harness.name}; restart ${harness.name} once after enabling replies.`
-              : `Answer in ${harness.name}, or enable notch replies in Integrations.`}
+        {attentionHint(session, harness, question)}
       </p>
     </div>
   )
+}
+
+function attentionHint(session: SessionRecord, harness: HarnessCatalogEntry, question: boolean) {
+  const { name } = harness
+  if (session.harness === 'codex') {
+    if (question)
+      return harness.controlsConnection === 'connected'
+        ? 'Answer this question in Codex. Its question details are unavailable in Buddy.'
+        : 'Answer this question in Codex. Native replies aren’t connected to this session.'
+    if (harness.controls)
+      return 'Answer in Codex. Buddy shows replies when connected to the same local app server.'
+  }
+  if (session.harness === 'claude-code' && session.parentId)
+    return 'Answer in Claude Code. Subagent requests stay there so its prompt isn’t delayed.'
+  if (harness.controls)
+    return `The request details haven’t reached Buddy. Answer in ${name}; restart ${name} once after enabling replies.`
+  return `Answer in ${name}, or enable notch replies in Integrations.`
 }

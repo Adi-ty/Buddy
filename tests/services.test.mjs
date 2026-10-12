@@ -196,10 +196,7 @@ test(
         assert(!control.command.includes('>/dev/null'), 'Policy JSON must reach the actual harness')
         assert(control.timeout > 120)
       }
-      assert.equal(
-        hooks.PreToolUse.some((p) => p.matcher === 'AskUserQuestion'),
-        harness === 'claude-code',
-      )
+      assert(!JSON.stringify(hooks.PreToolUse).includes('control-hook.mjs'))
       assert.equal(
         new ProfileSettings(join(profile, 'settings.json')).controlsEnabled(harness),
         true,
@@ -214,6 +211,39 @@ test(
     }
   },
 )
+
+test('refresh moves an outdated Claude question hook onto the racing PermissionRequest hook', async (t) => {
+  const profile = mkdtempSync(join(tmpdir(), 'buddy-controls-migration-'))
+  t.after(() => rmSync(profile, { recursive: true, force: true }))
+  const target = join(profile, 'hooks.json')
+  const keep = { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: 'keep-my-hook' }] }
+  writeFileSync(target, JSON.stringify({ hooks: { PreToolUse: [keep] } }))
+  const settings = new ProfileSettings(join(profile, 'settings.json'))
+  const manager = new IntegrationManager(
+    profile,
+    join(process.cwd(), 'integrations'),
+    true,
+    settings,
+  )
+  manager.target = () => target
+  manager.detected.set('claude-code', { compatible: true, capable: true, version: 'fixture' })
+  await manager.install('claude-code')
+  await manager.setControls('claude-code', true)
+  const config = JSON.parse(readFileSync(target, 'utf8'))
+  const control = config.hooks.PermissionRequest.at(-1).hooks[0]
+  control.timeout = 125
+  config.hooks.PreToolUse.push({ matcher: 'AskUserQuestion', hooks: [{ ...control }] })
+  writeFileSync(target, JSON.stringify(config))
+  const [entry] = await manager.refresh([{ id: 'claude-code', name: 'Claude Code' }])
+  assert.equal(entry.controls, true)
+  const hooks = JSON.parse(readFileSync(target, 'utf8')).hooks
+  assert.deepEqual(hooks.PreToolUse[0], keep)
+  assert(!JSON.stringify(hooks.PreToolUse).includes('control-hook.mjs'))
+  assert.equal(hooks.PermissionRequest.at(-1).hooks[0].timeout, 610)
+  const migrated = readFileSync(target, 'utf8')
+  await manager.refresh([{ id: 'claude-code', name: 'Claude Code' }])
+  assert.equal(readFileSync(target, 'utf8'), migrated)
+})
 
 test(
   'all harnesses install and remove within relocated user configuration directories',

@@ -7,6 +7,7 @@ import { connect } from 'node:net'
 import { spawn } from 'node:child_process'
 import { loadSource } from './load-source.mjs'
 import { hookRequest, hookOutput } from '../integrations/control-hook.mjs'
+import { inputDigest } from '../integrations/reporter.mjs'
 const { RequestBridge } = await loadSource('tests/requests-entry.ts')
 
 const waitFor = async (check) => {
@@ -248,10 +249,10 @@ test(
   },
 )
 
-test('hook questions echo original inputs and fall back for unsupported or oversized requests', () => {
+test('hook questions race the native prompt, echo original inputs and leave unsupported requests to the agent', () => {
   const input = {
     session_id: 'claude',
-    hook_event_name: 'PreToolUse',
+    hook_event_name: 'PermissionRequest',
     tool_name: 'AskUserQuestion',
     tool_input: {
       questions: [
@@ -264,14 +265,22 @@ test('hook questions echo original inputs and fall back for unsupported or overs
       ],
     },
   }
-  assert.equal(hookRequest('claude-code', input).kind, 'question')
-  const child = hookRequest('claude-code', { ...input, agent_id: 'subagent' })
-  assert.equal(child.sessionId, 'subagent')
-  assert.equal(child.parentId, 'claude')
+  const request = hookRequest('claude-code', input)
+  assert.equal(request.kind, 'question')
+  assert.equal(request.sessionId, 'claude')
+  assert.match(request.inputDigest, /^[0-9a-f]{64}$/)
+  assert.equal(request.inputDigest, inputDigest('AskUserQuestion', input.tool_input))
+  assert.equal(hookRequest('claude-code', { ...input, hook_event_name: 'PreToolUse' }), null)
+  assert.equal(hookRequest('claude-code', { ...input, agent_id: 'subagent' }), null)
+  assert.equal(hookRequest('claude-code', { ...input, tool_name: 'ExitPlanMode' }), null)
   assert.equal(hookRequest('codex', input), null)
   const output = hookOutput(input, { answers: [['Vue']] })
-  assert.deepEqual(output.hookSpecificOutput.updatedInput.questions, input.tool_input.questions)
-  assert.deepEqual(output.hookSpecificOutput.updatedInput.answers, { 'Which framework?': 'Vue' })
+  assert.equal(output.hookSpecificOutput.hookEventName, 'PermissionRequest')
+  assert.equal(output.hookSpecificOutput.decision.behavior, 'allow')
+  const updated = output.hookSpecificOutput.decision.updatedInput
+  assert.deepEqual(updated.questions, input.tool_input.questions)
+  assert.deepEqual(updated.answers, { 'Which framework?': 'Vue' })
+  assert.equal(hookOutput(input, { decision: 'allow' }), null)
   assert.equal(hookOutput(input, { decision: 'native' }), null)
   assert.equal(
     hookRequest('codex', {
@@ -281,4 +290,63 @@ test('hook questions echo original inputs and fall back for unsupported or overs
     }),
     null,
   )
+  assert.equal(
+    hookRequest('claude-code', {
+      ...input,
+      tool_name: 'Bash',
+      tool_input: { command: 'x'.repeat(64_000) },
+    }),
+    null,
+  )
 })
+
+test('input digests ignore key order but distinguish tools and inputs', () => {
+  assert.equal(
+    inputDigest('Bash', { command: 'ls', description: 'List' }),
+    inputDigest('Bash', { description: 'List', command: 'ls' }),
+  )
+  assert.notEqual(inputDigest('Bash', { command: 'ls' }), inputDigest('Read', { command: 'ls' }))
+  assert.notEqual(inputDigest('Bash', { command: 'ls' }), inputDigest('Bash', { command: 'pwd' }))
+  assert.equal(inputDigest(undefined, {}), undefined)
+})
+
+test(
+  'a Claude request answered in its own prompt retires when its exact tool call runs',
+  { timeout: 10_000 },
+  async (t) => {
+    const { bridge, client } = await fixture(t)
+    const owner = await client('claude-code')
+    await waitFor(() => owner.messages.some((p) => p.op === 'ready'))
+    const digest = (command) => inputDigest('Bash', { command })
+    const tool = (event, requestId, command) =>
+      bridge.observeTool({
+        harness: 'claude-code',
+        sessionId: 'session-1',
+        event,
+        requestId,
+        inputDigest: event === 'PreToolUse' ? digest(command) : null,
+      })
+    tool('PreToolUse', 'toolu-ls', 'ls')
+    tool('PreToolUse', 'toolu-rm', 'rm build')
+    owner.send({ ...permission(), inputDigest: digest('rm build') })
+    await waitFor(() => bridge.snapshot().length === 1)
+    tool('PostToolUse', 'toolu-ls')
+    await new Promise((done) => setTimeout(done, 20))
+    assert.equal(bridge.snapshot().length, 1)
+    bridge.observeTool({
+      harness: 'claude-code',
+      sessionId: 'session-2',
+      event: 'PostToolUse',
+      requestId: 'toolu-rm',
+    })
+    assert.equal(bridge.snapshot().length, 1)
+    tool('PostToolUse', 'toolu-rm')
+    await waitFor(() => !bridge.snapshot().length)
+    await waitFor(() => owner.messages.some((p) => p.op === 'retired' && p.id === 'request-1'))
+    owner.send({ ...permission('late'), inputDigest: digest('make') })
+    await waitFor(() => bridge.snapshot().length === 1)
+    tool('PreToolUse', 'toolu-make', 'make')
+    tool('PostToolUseFailure', 'toolu-make')
+    await waitFor(() => !bridge.snapshot().length)
+  },
+)

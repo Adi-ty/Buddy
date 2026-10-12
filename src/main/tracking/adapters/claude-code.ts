@@ -34,7 +34,7 @@ export const claudeCode: HarnessAdapter = {
     if (event.startsWith('Subagent') && !child) return null
     return {
       ...rule,
-      ...(event === 'PreToolUse' && p.tool === 'AskUserQuestion'
+      ...(['PreToolUse', 'PermissionRequest'].includes(event) && p.tool === 'AskUserQuestion'
         ? { status: 'needs-attention' as const, action: 'question' as const }
         : {}),
       ...(p.interrupted === true && ['PostToolUse', 'PostToolUseFailure'].includes(event)

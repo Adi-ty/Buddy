@@ -15,6 +15,7 @@ export interface Observation {
   turnId: string | null
   tool: string | null
   requestId: string | null
+  inputDigest?: string | null
   status: SessionStatus | null
   attention: readonly { id: string; kind: 'permission' | 'question' }[] | null
   action: 'observe' | 'metadata' | 'close' | 'permission' | 'question' | 'resolve'
@@ -70,6 +71,10 @@ export function normalizeObservation(value: unknown, now = Date.now()): Observat
     turnId: mapped.turnId === undefined ? textField(p.turnId) : mapped.turnId,
     tool: textField(p.tool, 120),
     requestId: textField(p.requestId),
+    inputDigest:
+      typeof p.inputDigest === 'string' && /^[0-9a-f]{64}$/.test(p.inputDigest)
+        ? p.inputDigest
+        : null,
     status: mapped.status,
     attention: mapped.attention ?? null,
     action: mapped.action,

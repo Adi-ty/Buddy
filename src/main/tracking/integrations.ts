@@ -19,8 +19,10 @@ import type { HarnessCatalogEntry, HarnessId } from '../../shared/contracts'
 import { ADAPTERS, HARNESSES } from './adapters'
 import type { ProfileSettings } from '../settings'
 import { parseCliVersion } from '../versions'
+import { HOOK_WINDOW } from './requests'
 
 const execute = promisify(execFile)
+const CONTROL_TIMEOUT = HOOK_WINDOW / 1000 + 10
 const quote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
@@ -145,25 +147,38 @@ export class IntegrationManager {
   private events(harness: HarnessId): string[] {
     return ADAPTERS[harness].hookEvents()
   }
+  private controlHandlers(harness: HarnessId) {
+    const hooks = (this.configuration(harness).root.hooks ?? {}) as Record<string, unknown>
+    return Object.entries(hooks).flatMap(([event, groups]) =>
+      (Array.isArray(groups) ? groups : []).flatMap((group) =>
+        object(group) && Array.isArray(group.hooks)
+          ? group.hooks
+              .filter((handler) => this.isControl(handler, harness))
+              .map((handler) => ({ event, group, handler: handler as Record<string, unknown> }))
+          : [],
+      ),
+    )
+  }
   private controlsConfigured(harness: HarnessId): boolean {
     if (!this.settings?.controlsEnabled(harness)) return false
     if (harness === 'opencode' || harness === 'codex') return true
     try {
-      const hooks = this.configuration(harness).root.hooks as Record<string, unknown> | undefined
-      return ['PermissionRequest', ...(harness === 'claude-code' ? ['PreToolUse'] : [])].every(
-        (event) => {
-          const groups = hooks?.[event]
-          return (
-            Array.isArray(groups) &&
-            groups.some(
-              (group) =>
-                object(group) &&
-                (event !== 'PreToolUse' || group.matcher === 'AskUserQuestion') &&
-                Array.isArray(group.hooks) &&
-                group.hooks.some((handler) => this.isControl(handler, harness)),
-            )
-          )
-        },
+      return this.controlHandlers(harness).some(
+        ({ event, group }) => event === 'PermissionRequest' && group.matcher === undefined,
+      )
+    } catch {
+      return false
+    }
+  }
+  // Earlier setups also blocked questions from PreToolUse.
+  private controlsOutdated(harness: HarnessId): boolean {
+    if (harness !== 'claude-code' || !this.settings?.controlsEnabled(harness)) return false
+    try {
+      return this.controlHandlers(harness).some(
+        ({ event, group, handler }) =>
+          event !== 'PermissionRequest' ||
+          group.matcher !== undefined ||
+          handler.timeout !== CONTROL_TIMEOUT,
       )
     } catch {
       return false
@@ -261,6 +276,13 @@ export class IntegrationManager {
     // Existing observers keep their configured command/wrapper. Refresh their
     // owned implementation when Buddy updates, without rewriting hook settings.
     if (entries.some((entry) => entry.observer !== 'not-installed')) this.syncAssets()
+    for (const entry of entries)
+      if (entry.observer === 'installed' && this.controlsOutdated(entry.id))
+        try {
+          this.updateHooks(entry.id, true)
+        } catch {
+          /* Left unchanged; the outdated hook keeps working. */
+        }
     return entries
   }
   async install(harness: HarnessId, allowUnverified = false): Promise<void> {
@@ -356,11 +378,12 @@ export class IntegrationManager {
         install &&
         this.settings?.controlsEnabled(harness) &&
         harness !== 'codex' &&
-        (event === 'PermissionRequest' || (harness === 'claude-code' && event === 'PreToolUse'))
+        event === 'PermissionRequest'
       )
         groups.push({
-          ...(event === 'PreToolUse' ? { matcher: 'AskUserQuestion' } : {}),
-          hooks: [{ type: 'command', command: this.controlCommand(harness), timeout: 125 }],
+          hooks: [
+            { type: 'command', command: this.controlCommand(harness), timeout: CONTROL_TIMEOUT },
+          ],
         })
       if (groups.length) hooks[event] = groups
       else delete hooks[event]

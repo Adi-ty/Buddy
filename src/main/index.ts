@@ -340,6 +340,7 @@ function scheduleSessions(): void {
 }
 
 function observeSession(event: Observation): void {
+  requests?.observeTool(event)
   const before = store?.get(`${event.harness}:${event.sessionId}`) ?? null
   if (store?.apply(event)) {
     notifications?.observe(before, store.get(`${event.harness}:${event.sessionId}`))
@@ -737,9 +738,8 @@ if (!app.requestSingleInstanceLock()) {
               id: `control-${context.sourceId}`,
               harness: context.harness,
               sessionId: context.providerId,
-              parentId: context.parentId,
               turnId: context.turnId,
-              event: context.kind === 'permission' ? 'PermissionRequest' : 'PreToolUse',
+              event: 'PermissionRequest',
               tool: context.tool,
               cwd: context.cwd,
               at: Date.now(),

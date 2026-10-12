@@ -113,6 +113,13 @@ test('adapter event fixtures preserve lifecycle, completion and provider-specifi
     ['codex', 'Stop', {}, 'completed', 'observe'],
     ['codex', 'SessionEnd', {}, null, 'close'],
     ['claude-code', 'PermissionDenied', {}, null, 'resolve'],
+    [
+      'claude-code',
+      'PermissionRequest',
+      { tool: 'AskUserQuestion' },
+      'needs-attention',
+      'question',
+    ],
     ['claude-code', 'PostToolUseFailure', {}, 'error', 'observe'],
     [
       'claude-code',

@@ -3,6 +3,24 @@ import { connect } from 'node:net'
 import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
+// Correlates a tool call across hook events without sending its input.
+export function inputDigest(tool, input) {
+  if (typeof tool !== 'string') return undefined
+  const canonical = (value) =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, canonical(value[key])]),
+          )
+        : value
+  return createHash('sha256')
+    .update(JSON.stringify([tool, canonical(input ?? null)]))
+    .digest('hex')
+}
+
 // Shared by command hooks and the OpenCode plugin. Never sends prompts, tool
 // inputs/results, transcripts, permission resources or errors. OpenCode session
 // titles are included only as display names.
@@ -19,6 +37,7 @@ export function metadata(value) {
     'turnId',
     'tool',
     'requestId',
+    'inputDigest',
     'notificationType',
     'status',
   ]
@@ -114,6 +133,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         turnId: p.turn_id,
         tool: p.tool_name,
         requestId: p.tool_use_id,
+        inputDigest:
+          process.argv[2] === 'claude-code' && p.hook_event_name === 'PreToolUse'
+            ? inputDigest(p.tool_name, p.tool_input)
+            : undefined,
         notificationType: p.notification_type,
         toolFailed:
           p.hook_event_name === 'PostToolUse' &&
