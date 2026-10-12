@@ -31,6 +31,8 @@ export class OverlayController {
   private polling: ReturnType<typeof setInterval> | null = null
   private leavingAt: number | null = null
   private sessions: readonly SessionRecord[] = []
+  private context: readonly SessionRecord[] = []
+  private displayedIds = new Set<string>()
   private hoveringAt: number | null = null
   private hoverSuppressed = false
   private inputActive = false
@@ -91,20 +93,41 @@ export class OverlayController {
     this.apply()
   }
 
-  setLiveSessions(sessions: readonly SessionRecord[]): void {
+  setLiveSessions(
+    sessions: readonly SessionRecord[],
+    context: readonly SessionRecord[] = sessions,
+  ): void {
     this.sessions = sessions
+    this.context = context
     if (this.completionTimer) clearTimeout(this.completionTimer)
+    this.completionTimer = null
+    const state = this.host.getState()
+    const fresh = notchRecords(sessions, Date.now(), context)
+    const freshIds = new Set(fresh.map((item) => item.id))
+    const completionHoldIds =
+      state.visible && (this.inputActive || this.pointerInside())
+        ? sessions
+            .filter(
+              (item) =>
+                item.status === 'completed' &&
+                this.displayedIds.has(item.id) &&
+                !freshIds.has(item.id),
+            )
+            .map((item) => item.id)
+        : []
+    if (completionHoldIds.join('|') !== (state.completionHoldIds ?? []).join('|'))
+      this.update({ completionHoldIds })
+    this.displayedIds = new Set([...freshIds, ...completionHoldIds])
     const deadlines = sessions
       .filter((item) => item.status === 'completed')
       .map((item) => item.statusChangedAt + COMPLETION_NOTICE_MS)
       .filter((at) => at > Date.now())
     if (deadlines.length)
       this.completionTimer = setTimeout(
-        () => this.setLiveSessions(this.sessions),
+        () => this.setLiveSessions(this.sessions, this.context),
         Math.min(...deadlines) - Date.now() + 1,
       )
-    if (!notchRecords(sessions).length && this.host.getState().expanded)
-      this.update({ expanded: false })
+    if (!this.displayedIds.size && this.host.getState().expanded) this.update({ expanded: false })
     this.apply()
   }
 
@@ -125,7 +148,11 @@ export class OverlayController {
   expand(expanded: boolean): void {
     if (!this.sessions.length) return
     if (!expanded && this.inputActive) this.setInputActive(false)
-    this.update({ expanded })
+    this.update({ expanded, ...(!expanded ? { completionHoldIds: [] } : {}) })
+    if (!expanded)
+      this.displayedIds = new Set(
+        notchRecords(this.sessions, Date.now(), this.context).map((item) => item.id),
+      )
     this.leavingAt = null
     this.hoveringAt = null
     this.hoverSuppressed = !expanded
@@ -200,7 +227,7 @@ export class OverlayController {
       this.suspended ||
       this.disposed ||
       this.rendererFailures >= 3 ||
-      !notchRecords(this.sessions).length ||
+      !notchRecords(this.sessions, Date.now(), this.context, state.completionHoldIds).length ||
       state.geometry !== 'ready'
     ) {
       this.hide()
@@ -291,17 +318,12 @@ export class OverlayController {
   private checkPointer(): void {
     const state = this.host.getState()
     if (!this.window || !state.visible) return
-    const bounds = this.window.getBounds()
-    const point = screen.getCursorScreenPoint()
-    const inside =
-      point.x >= bounds.x &&
-      point.x < bounds.x + bounds.width &&
-      point.y >= bounds.y &&
-      point.y < bounds.y + bounds.height
+    const inside = this.pointerInside()
     if (!state.expanded) {
       if (!inside) {
         this.hoveringAt = null
         this.hoverSuppressed = false
+        if (state.completionHoldIds?.length) this.setLiveSessions(this.sessions, this.context)
       } else if (this.hoverSuppressed) return
       else if (this.hoveringAt === null) this.hoveringAt = Date.now()
       else if (Date.now() - this.hoveringAt > 350) this.expand(true)
@@ -312,18 +334,31 @@ export class OverlayController {
     else if (Date.now() - this.leavingAt > 1200) this.expand(false)
   }
 
+  private pointerInside(): boolean {
+    if (!this.window || this.window.isDestroyed()) return false
+    const bounds = this.window.getBounds()
+    const point = screen.getCursorScreenPoint()
+    return (
+      point.x >= bounds.x &&
+      point.x < bounds.x + bounds.width &&
+      point.y >= bounds.y &&
+      point.y < bounds.y + bounds.height
+    )
+  }
+
   private hide(): void {
     if (this.inputActive) this.setInputActive(false)
     if (this.polling) clearInterval(this.polling)
     this.polling = null
     this.leavingAt = null
     this.hoveringAt = null
+    this.displayedIds.clear()
     if (this.window && !this.window.isDestroyed()) {
       this.window.setIgnoreMouseEvents(true, { forward: true })
       this.window.hide()
     }
     if (this.host.getState().visible || this.host.getState().actualBounds)
-      this.update({ visible: false, actualBounds: null })
+      this.update({ visible: false, actualBounds: null, completionHoldIds: [] })
   }
 
   private clearTimers(): void {

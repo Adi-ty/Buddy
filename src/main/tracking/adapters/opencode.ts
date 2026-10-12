@@ -42,6 +42,7 @@ export const opencode: HarnessAdapter = {
           status: p.status === 'idle' ? 'idle' : 'working',
           action: 'observe',
           idleCompletesTurn: p.status === 'idle',
+          turnActive: p.status !== 'idle',
         }
         if (p.event === 'buddy.reconcile' && p.attention !== undefined) {
           if (!Array.isArray(p.attention) || p.attention.length > 32) return null
@@ -61,7 +62,12 @@ export const opencode: HarnessAdapter = {
         break
       }
       case 'session.idle':
-        result = { status: 'completed', action: 'observe', preserveErrorOnCompletion: true }
+        result = {
+          status: 'completed',
+          action: 'observe',
+          preserveErrorOnCompletion: true,
+          turnActive: false,
+        }
         break
       case 'session.error':
         result = { status: 'error', action: 'observe' }

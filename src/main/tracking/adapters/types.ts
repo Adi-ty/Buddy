@@ -17,6 +17,7 @@ export interface EventMapping {
   clearPermissionHints?: boolean
   idleCompletesTurn?: boolean
   preserveErrorOnCompletion?: boolean
+  turnActive?: boolean
 }
 export interface HarnessAdapter {
   id: HarnessId

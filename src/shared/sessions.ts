@@ -13,10 +13,41 @@ export const sessionStatusLabels: Record<SessionRecord['status'], string> = {
 export type SessionSignal = 'attention' | 'success' | 'error'
 export const COMPLETION_NOTICE_MS = 12_000
 
-export function notchRecords(records: readonly SessionRecord[], now = Date.now()): SessionRecord[] {
+// Keep old child errors available in the inspector without applying them to
+// a later parent turn or after the child's runtime confirms it is idle.
+// Pending input and unresolved child failures always surface.
+export function sessionErrorIsCurrent(
+  record: SessionRecord,
+  known: ReadonlyMap<string, SessionRecord>,
+): boolean {
+  if (record.status !== 'error') return true
+  const seen = new Set([record.id])
+  let parentId = record.parentId
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId)
+    const parent = known.get(parentId)
+    if (!parent || parent.harness !== record.harness) break
+    if (record.turnActive === false) return false
+    if ((parent.turnStartedAt ?? 0) > record.statusChangedAt) return false
+    parentId = parent.parentId
+  }
+  return true
+}
+
+export function notchRecords(
+  records: readonly SessionRecord[],
+  now = Date.now(),
+  context: readonly SessionRecord[] = records,
+  completionHoldIds: readonly string[] = [],
+): SessionRecord[] {
+  const known = new Map(context.map((record) => [record.id, record]))
+  const held = new Set(completionHoldIds)
   return records.filter(
     (record) =>
-      record.status !== 'completed' || now - record.statusChangedAt < COMPLETION_NOTICE_MS,
+      sessionErrorIsCurrent(record, known) &&
+      (record.status !== 'completed' ||
+        now - record.statusChangedAt < COMPLETION_NOTICE_MS ||
+        held.has(record.id)),
   )
 }
 

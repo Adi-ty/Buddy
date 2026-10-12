@@ -10,6 +10,7 @@ import { Notice } from './ui/notice'
 import { useNotice } from '@/lib/use-notice'
 import { useEffect } from 'react'
 import { relativeTime } from '@shared/session-families'
+import { errorMessage } from '@shared/error-message'
 
 export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const [pending, setPending] = useState<string | null>(null)
@@ -65,7 +66,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
     } catch (error) {
       setNotice({
         error: true,
-        text: error instanceof Error ? error.message : 'Setup failed. Try again.',
+        text: errorMessage(error, 'Setup failed. Try again.'),
       })
     } finally {
       setPending(null)

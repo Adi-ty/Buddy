@@ -395,7 +395,7 @@ function publishSessions(): void {
       }
     }),
   }
-  overlay?.setLiveSessions(sessions)
+  overlay?.setLiveSessions(sessions, [...sessions, ...records.history])
   broadcastNow()
 }
 

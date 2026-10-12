@@ -67,6 +67,8 @@ export interface OverlayState extends OverlayOptions {
   visible: boolean
   actualBounds: Rect | null
   shortcutAvailable: boolean
+  // Expired completion rows retained only during an existing hover/input.
+  completionHoldIds?: readonly string[]
 }
 
 // No provider has been observed at bootstrap. Empty arrays are not a claim of
@@ -100,6 +102,9 @@ export interface SessionRecord extends AvatarPreview {
   lastSeen: number
   ordinal: number
   turnId: string | null
+  turnStartedAt?: number
+  // A confirmed runtime state, separate from the retained turn outcome.
+  turnActive?: boolean
   attention: readonly { id: string; tool: string | null; kind: 'permission' | 'question' }[]
   activity: readonly SessionActivity[]
 }

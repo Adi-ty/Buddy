@@ -21,6 +21,7 @@ export interface Observation {
   clearPermissionHints?: boolean
   idleCompletesTurn?: boolean
   preserveErrorOnCompletion?: boolean
+  turnActive?: boolean
 }
 
 export function textField(value: unknown, limit = 256): string | null {
@@ -75,5 +76,6 @@ export function normalizeObservation(value: unknown, now = Date.now()): Observat
     clearPermissionHints: mapped.clearPermissionHints,
     idleCompletesTurn: mapped.idleCompletesTurn,
     preserveErrorOnCompletion: mapped.preserveErrorOnCompletion,
+    turnActive: mapped.turnActive,
   }
 }

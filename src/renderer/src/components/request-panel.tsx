@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentRequest, AgentResponse } from '@shared/contracts'
+import { errorMessage } from '@shared/error-message'
 import { Button } from './ui/button'
 import { Notice } from './ui/notice'
 import { Check, LoaderCircle, X } from 'lucide-react'
@@ -45,7 +46,7 @@ export function RequestPanel({
         await window.buddy.setOverlayInput(false)
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Couldn’t send. Try again.')
+      setError(errorMessage(error, 'Couldn’t send. Try again.'))
     } finally {
       setSending(false)
     }
@@ -156,7 +157,14 @@ export function RequestPanel({
       )}
       <Notice
         className="mt-3"
-        message={error || request.error ? { text: error ?? request.error!, error: true } : null}
+        message={
+          error || request.error
+            ? {
+                text: errorMessage(error ?? request.error, 'Couldn’t send. Try again.'),
+                error: true,
+              }
+            : null
+        }
       />
       <div className="mt-3 flex flex-wrap gap-2">
         {request.kind === 'permission' ? (

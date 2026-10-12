@@ -19,6 +19,7 @@ import { textField, type Observation } from './events'
 interface StoredSession extends Omit<SessionRecord, 'dataUri'> {
   seed: string
   lastEventAt: number
+  lastStateAt?: number
   lastPresenceAt: number
   seen: string[]
   nameSource?: 'harness' | 'fallback'
@@ -116,7 +117,9 @@ export class SessionStore {
             ? fallbackName(record.harness, record.ordinal)
             : record.name,
         statusChangedAt: record.statusChangedAt ?? record.lastEventAt,
+        lastStateAt: record.lastStateAt ?? record.lastEventAt,
         presence: record.presence === 'closed' ? 'closed' : 'stale',
+        turnActive: record.presence === 'closed' ? false : undefined,
         status: record.presence === 'closed' ? record.status : 'unknown',
         attention: [],
       })
@@ -254,7 +257,14 @@ export class SessionStore {
     const id = key(event.harness, event.sessionId)
     const existing = this.records.get(id)
     const identity = this.identities.get(id)
-    if (existing?.seen.includes(event.id) || (existing && event.at < existing.lastEventAt))
+    if (
+      existing?.seen.includes(event.id) ||
+      (existing &&
+        event.at <
+          (event.action === 'metadata'
+            ? existing.lastEventAt
+            : (existing.lastStateAt ?? existing.lastEventAt)))
+    )
       return false
     if (
       existing?.turnId &&
@@ -289,18 +299,21 @@ export class SessionStore {
           attention: [],
           activity: [],
           lastEventAt: 0,
+          lastStateAt: 0,
           lastPresenceAt: 0,
           seen: [],
         }
     record.lastSeen = receivedAt
     if (event.source === 'app-server') record.source = 'app-server'
-    record.lastEventAt = event.at
+    const freshMetadata = event.at >= record.lastEventAt
+    record.lastEventAt = Math.max(record.lastEventAt, event.at)
     record.seen = [...record.seen.slice(-127), event.id]
     if (event.action !== 'metadata') {
+      record.lastStateAt = event.at
       record.presence = event.action === 'close' ? 'closed' : 'observed'
       record.lastPresenceAt = receivedAt
     } else if (!existing) record.presence = 'stale'
-    if (event.cwd) {
+    if (freshMetadata && event.cwd) {
       record.cwd = event.cwd
       record.project = basename(event.cwd) || event.cwd
     }
@@ -310,12 +323,24 @@ export class SessionStore {
         : record.source === 'app-server' && record.nameSource === 'harness'
           ? null
           : (this.lookupName(event.harness, event.sessionId, record.cwd) ?? event.name)
-    if (name) {
+    if (freshMetadata && name) {
       record.name = name
       record.nameSource = 'harness'
     }
-    if (event.parentId) record.parentId = key(event.harness, event.parentId)
+    if (freshMetadata && event.parentId) record.parentId = key(event.harness, event.parentId)
+    if (
+      event.event === 'UserPromptSubmit' ||
+      event.event === 'SubagentStart' ||
+      (event.status === 'working' &&
+        !['working', 'needs-attention'].includes(existing?.status ?? 'unknown'))
+    )
+      record.turnStartedAt = event.at
     if (event.turnId) record.turnId = event.turnId
+    if (event.turnActive !== undefined) record.turnActive = event.turnActive
+    else if (event.status === 'error') record.turnActive = undefined
+    else if (event.status === 'working') record.turnActive = true
+    else if (event.action === 'close' || ['completed', 'interrupted'].includes(event.status ?? ''))
+      record.turnActive = false
     if (event.event === 'UserPromptSubmit' || event.event === 'SessionStart') record.attention = []
     if (event.action === 'permission' || event.action === 'question') {
       const request = event.requestId ?? event.tool ?? 'uncorrelated'
@@ -366,7 +391,11 @@ export class SessionStore {
     if (event.attention !== null)
       record.attention = event.attention.map((item) => ({ ...item, tool: null }))
     if (record.attention.length) record.status = 'needs-attention'
-    if (record.status !== existing?.status) record.statusChangedAt = event.at
+    if (
+      record.status !== existing?.status ||
+      (event.status === 'error' && record.status === 'error')
+    )
+      record.statusChangedAt = event.at
     record.activity = [
       ...record.activity.slice(-19),
       { event: event.event, at: event.at, tool: event.tool },
@@ -387,9 +416,11 @@ export class SessionStore {
               next.set(childId, {
                 ...child,
                 presence: 'stale',
+                turnActive: undefined,
                 status: 'unknown',
                 attention: [],
                 lastEventAt: Math.max(child.lastEventAt, event.at),
+                lastStateAt: Math.max(child.lastStateAt ?? child.lastEventAt, event.at),
               })
             found = true
           }
@@ -424,7 +455,13 @@ export class SessionStore {
     let changed = false
     for (const [id, record] of next)
       if (record.presence === 'observed' && (all || now - record.lastPresenceAt > STALE_AFTER)) {
-        next.set(id, { ...record, presence: 'stale', status: 'unknown', attention: [] })
+        next.set(id, {
+          ...record,
+          presence: 'stale',
+          status: 'unknown',
+          turnActive: undefined,
+          attention: [],
+        })
         changed = true
       }
     if (changed) {
@@ -462,8 +499,10 @@ export class SessionStore {
       ...record,
       attention,
       status: attention.length ? 'needs-attention' : allowed ? 'working' : 'unknown',
+      turnActive: allowed ? true : record.turnActive,
       statusChangedAt: Date.now(),
       lastEventAt: Math.max(record.lastEventAt, Date.now()),
+      lastStateAt: Math.max(record.lastStateAt ?? record.lastEventAt, Date.now()),
     })
     this.scheduleFlush()
   }
@@ -513,6 +552,7 @@ export class SessionStore {
       seed,
       seen: _seen,
       lastEventAt: _at,
+      lastStateAt: _state,
       lastPresenceAt: _presence,
       nameSource: _name,
       ...record
@@ -540,6 +580,7 @@ export class SessionStore {
           seed,
           seen: _seen,
           lastEventAt: _at,
+          lastStateAt: _state,
           lastPresenceAt: _presence,
           nameSource: _name,
           ...record
@@ -573,6 +614,10 @@ function validRecord(r: StoredSession): boolean {
     (r.nameSource === undefined || ['harness', 'fallback'].includes(r.nameSource)) &&
     (r.statusChangedAt === undefined ||
       (Number.isFinite(r.statusChangedAt) && r.statusChangedAt >= 0)) &&
+    (r.turnStartedAt === undefined || (Number.isFinite(r.turnStartedAt) && r.turnStartedAt >= 0)) &&
+    (r.turnActive === undefined || typeof r.turnActive === 'boolean') &&
+    (r.lastStateAt === undefined ||
+      (Number.isFinite(r.lastStateAt) && r.lastStateAt >= 0 && r.lastStateAt <= r.lastEventAt)) &&
     textField(r.project, 2048) !== null &&
     (r.cwd === null || textField(r.cwd, 2048) !== null) &&
     (r.parentId === null || textField(r.parentId) !== null) &&

@@ -1,5 +1,5 @@
 import type { AgentRequest, SessionRecord } from './contracts'
-import { prioritizeSessions } from './sessions'
+import { prioritizeSessions, sessionErrorIsCurrent } from './sessions'
 
 export interface SessionFamily {
   root: SessionRecord
@@ -75,9 +75,13 @@ export function sessionFamilies(
   for (const group of groups.values()) {
     group.descendants.sort((a, b) => a.ordinal - b.ordinal)
     const ordered = prioritizeSessions(group.members, now)
-    const signal = ordered.find((item) => ['needs-attention', 'error'].includes(item.status))
+    const signal = ordered.find(
+      (item) =>
+        ['needs-attention', 'error'].includes(item.status) && sessionErrorIsCurrent(item, known),
+    )
     const working = ordered.find((item) => item.status === 'working')
-    const lead = signal ?? working ?? ordered[0]!
+    const lead =
+      signal ?? working ?? ordered.find((item) => sessionErrorIsCurrent(item, known)) ?? group.root
     group.summary = {
       ...group.root,
       status: lead.status,

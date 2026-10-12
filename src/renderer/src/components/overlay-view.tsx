@@ -39,7 +39,12 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
     sessionId: string | null
   } | null>(null)
   const families = sessionFamilies(
-    notchRecords(snapshot.sessions, now),
+    notchRecords(
+      snapshot.sessions,
+      now,
+      [...snapshot.sessions, ...snapshot.history],
+      snapshot.overlay.completionHoldIds,
+    ),
     [...snapshot.sessions, ...snapshot.history],
     now,
   )
@@ -123,6 +128,9 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
                     selected={Boolean(selected)}
                     summary={family.summary}
                     subagentCount={family.descendants.length}
+                    subagentFailureCount={
+                      family.descendants.filter((item) => item.status === 'error').length
+                    }
                     compact
                     now={now}
                     onSelect={() =>

@@ -331,6 +331,9 @@ export function SessionList({
                       session={family.root}
                       summary={item}
                       subagentCount={family.descendants.length}
+                      subagentFailureCount={
+                        family.descendants.filter((item) => item.status === 'error').length
+                      }
                       harness={harnessFor(snapshot, item.harness)}
                       selected={item.id === selectedFamily?.root.id}
                       tabIndex={

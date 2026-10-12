@@ -17,6 +17,7 @@ export function SessionRow({
   tabIndex,
   summary = session,
   subagentCount = 0,
+  subagentFailureCount = 0,
   onFocus,
 }: {
   session: SessionRecord
@@ -29,6 +30,7 @@ export function SessionRow({
   tabIndex?: number
   summary?: SessionRecord
   subagentCount?: number
+  subagentFailureCount?: number
   onFocus?: () => void
 }) {
   const signal = sessionNotification(summary, now)
@@ -67,6 +69,7 @@ export function SessionRow({
             {subagentCount > 0 && (
               <span className="shrink-0 text-[10px] text-muted-foreground">
                 +{subagentCount} {subagentCount === 1 ? 'subagent' : 'subagents'}
+                {subagentFailureCount > 0 && ` · ${subagentFailureCount} failed`}
               </span>
             )}
           </span>

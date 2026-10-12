@@ -14,6 +14,7 @@ interface Thread {
   status: SessionStatus
   heartbeat: number
   activeSeen: boolean
+  revision: number
 }
 interface Pending extends CodexRequest {
   hidden: boolean
@@ -96,8 +97,10 @@ export class CodexAppServer {
     this.client.respond(request.rpcId, request.result(response))
     request.view = { ...request.view, submitting: true, error: null }
     request.timer = setTimeout(() => {
+      request.timer = undefined
       request.view = {
         ...request.view,
+        submitting: false,
         error: 'Codex hasn’t confirmed this response. Check its window before continuing.',
       }
       this.options.changed()
@@ -184,19 +187,32 @@ export class CodexAppServer {
           // intentionally reopened, no turn is started, and no config is changed.
           try {
             const read = await client.call('thread/read', { threadId: id, includeTurns: false })
+            if (this.client !== client) return
             if (
               isObject(read.thread) &&
+              read.thread.id === id &&
               isObject(read.thread.status) &&
               read.thread.status.type !== 'notLoaded'
             ) {
               this.metadata(read.thread)
+              const revision = this.threads.get(id)?.revision
               const response = await client.call('thread/resume', {
                 threadId: id,
                 excludeTurns: true,
               })
-              if (isObject(response.thread)) this.metadata(response.thread)
+              if (this.client !== client) return
+              // A live turn/request can finish while resume is in flight.
+              // Its newer state must win over the response's old snapshot.
+              if (
+                isObject(response.thread) &&
+                response.thread.id === id &&
+                this.threads.has(id) &&
+                this.threads.get(id)?.revision === revision
+              )
+                this.metadata(response.thread)
             }
           } catch {
+            if (this.client !== client) return
             if (!client.connected) throw new Error('Codex disconnected.')
             // Ephemeral/internal runtimes can appear in loaded/list without a
             // resumable rollout. They must not disconnect every other session.
@@ -204,12 +220,17 @@ export class CodexAppServer {
             this.threads.delete(id)
             this.retryThreads.set(id, Date.now() + 60_000)
           } finally {
-            this.subscribing.delete(id)
+            if (this.client === client) this.subscribing.delete(id)
           }
         }
         const thread = this.threads.get(id)
         if (thread?.activeSeen && Date.now() - thread.heartbeat > 60_000)
-          this.observe(thread, 'AppServerHeartbeat', null)
+          this.observe(
+            thread,
+            'AppServerHeartbeat',
+            null,
+            ['completed', 'error', 'interrupted'].includes(thread.status) ? 'metadata' : 'observe',
+          )
       }
       for (const [id, thread] of this.threads)
         if (!loaded.has(id)) {
@@ -219,8 +240,10 @@ export class CodexAppServer {
         }
       for (const id of this.retryThreads.keys()) if (!loaded.has(id)) this.retryThreads.delete(id)
     } finally {
-      this.polling = false
-      if (this.client === client) this.schedule()
+      if (this.client === client) {
+        this.polling = false
+        this.schedule()
+      }
     }
   }
   private metadata(value: Record<string, unknown>): void {
@@ -236,6 +259,7 @@ export class CodexAppServer {
       status: previous?.status ?? 'unknown',
       heartbeat: previous?.heartbeat ?? 0,
       activeSeen: previous?.activeSeen ?? false,
+      revision: previous?.revision ?? 0,
     }
     this.threads.set(id, thread)
     this.status(thread, value.status)
@@ -250,15 +274,11 @@ export class CodexAppServer {
         ? 'needs-attention'
         : 'working'
     } else if (value.type === 'idle') {
-      if (!thread.activeSeen) {
+      if (!thread.activeSeen || ['completed', 'error', 'interrupted'].includes(thread.status)) {
         this.observe(thread, 'AppServerMetadata', null, 'metadata')
         return
       }
-      status = ['completed', 'error', 'interrupted'].includes(thread.status)
-        ? thread.status
-        : ['working', 'needs-attention'].includes(thread.status)
-          ? 'completed'
-          : 'idle'
+      status = ['working', 'needs-attention'].includes(thread.status) ? 'completed' : 'idle'
     } else if (value.type === 'systemError') status = 'error'
     else return
     thread.status = status
@@ -289,6 +309,7 @@ export class CodexAppServer {
       tool,
       requestId,
       attention: null,
+      ...(status === 'error' ? { turnActive: false } : {}),
     })
   }
   private receive(message: Record<string, unknown>): void {
@@ -304,6 +325,7 @@ export class CodexAppServer {
     const id = textField(params.threadId, 128)
     if (!id || !this.threads.has(id)) return
     const thread = this.threads.get(id)!
+    ++thread.revision
     if (isRpcId(message.id)) {
       const key = requestKey(id, message.id)
       if (this.pending.has(key) || this.pending.size >= 64) return
