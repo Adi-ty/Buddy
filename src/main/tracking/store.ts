@@ -46,6 +46,7 @@ export class SessionStore {
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private dirty = false
   private retryAt = 0
+  private nameCursor = 0
   droppedObservations = 0
   capacityEvictions = 0
   message: string | null = null
@@ -191,7 +192,6 @@ export class SessionStore {
     this.message =
       'Session data could not be saved. Observation is paused; Buddy will retry in 30 seconds.'
     this.retryAt = Date.now() + RETRY_AFTER
-    this.expire(Date.now(), true)
     this.options.onPersistenceError?.()
   }
 
@@ -372,11 +372,15 @@ export class SessionStore {
       record.attention = record.attention.filter((item) => {
         if (event.requestId && item.id === event.requestId) return false
         // PermissionRequest may lack the ID that PostToolUse supplies.
-        const hint = item.kind === 'permission' && item.id === (item.tool ?? 'uncorrelated')
+        const hint = item.id === (item.tool ?? 'uncorrelated')
         return !(hint && (item.tool === null || item.tool === event.tool))
       })
     }
-    if (event.action === 'close' || ['Stop', 'SubagentStop', 'Interrupt'].includes(event.event))
+    if (
+      event.action === 'close' ||
+      ['Stop', 'StopFailure', 'SubagentStop', 'Interrupt'].includes(event.event) ||
+      event.status === 'interrupted'
+    )
       record.attention = []
     if (event.status !== null) {
       // An initial idle observation is not a completed turn. OpenCode reports
@@ -384,8 +388,11 @@ export class SessionStore {
       if (event.status === 'idle' && event.idleCompletesTurn) {
         if (['working', 'needs-attention', 'completed'].includes(record.status))
           record.status = 'completed'
-        else if (record.status !== 'error') record.status = 'idle'
-      } else if (!event.preserveErrorOnCompletion || record.status !== 'error')
+        else if (!['error', 'interrupted'].includes(record.status)) record.status = 'idle'
+      } else if (
+        !event.preserveErrorOnCompletion ||
+        !['error', 'interrupted'].includes(record.status)
+      )
         record.status = event.status
     }
     if (event.attention !== null)
@@ -507,11 +514,14 @@ export class SessionStore {
     this.scheduleFlush()
   }
 
-  refreshNames(): boolean {
+  refreshNames(limit = 32): boolean {
     if (this.message) return false
     const next = new Map(this.records)
     let changed = false
-    for (const [id, record] of next) {
+    const entries = [...next.entries()]
+    const count = Math.min(limit, entries.length)
+    for (let offset = 0; offset < count; offset++) {
+      const [id, record] = entries[(this.nameCursor + offset) % entries.length]!
       if (record.source === 'app-server' && record.nameSource === 'harness') continue
       const name = this.lookupName(record.harness, record.providerSessionId, record.cwd)
       if (name && (name !== record.name || record.nameSource !== 'harness')) {
@@ -519,6 +529,7 @@ export class SessionStore {
         changed = true
       }
     }
+    this.nameCursor = entries.length ? (this.nameCursor + count) % entries.length : 0
     if (changed) {
       this.records = next
       this.scheduleFlush()
@@ -572,7 +583,7 @@ export class SessionStore {
     return times.length ? Math.max(...times) : undefined
   }
 
-  snapshot(): { sessions: SessionRecord[]; history: SessionRecord[] } {
+  snapshot(includeHistoryAvatars = true): { sessions: SessionRecord[]; history: SessionRecord[] } {
     const records = [...this.records.values()]
       .sort((a, b) => a.ordinal - b.ordinal)
       .map(
@@ -585,6 +596,8 @@ export class SessionStore {
           nameSource: _name,
           ...record
         }) => {
+          if (!includeHistoryAvatars && record.presence !== 'observed')
+            return { ...record, dataUri: '' }
           let dataUri = this.avatars.get(seed)
           if (!dataUri) {
             dataUri = sessionAvatar(seed, record.ordinal)

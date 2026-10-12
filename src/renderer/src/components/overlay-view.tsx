@@ -28,7 +28,13 @@ export function OverlayView() {
     document.documentElement.classList.add('overlay-window')
     return () => document.documentElement.classList.remove('overlay-window')
   }, [])
-  return snapshot && !failed ? <OverlaySessions snapshot={snapshot} /> : null
+  return failed ? (
+    <div className="overlay-surface p-3 text-xs" role="alert">
+      The notch couldn’t reconnect. Open Buddy from its menu to retry.
+    </div>
+  ) : snapshot ? (
+    <OverlaySessions snapshot={snapshot} />
+  ) : null
 }
 
 export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
@@ -38,6 +44,28 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
     familyId: string
     sessionId: string | null
   } | null>(null)
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      const details = (event.target as HTMLElement).closest(
+        'details[open]',
+      ) as HTMLDetailsElement | null
+      if (details) {
+        details.open = false
+        details.querySelector('summary')?.focus()
+      } else if (selection) setSelection(null)
+      else {
+        void window.buddy.setOverlayExpanded(false).catch(() =>
+          setNotice({
+            error: true,
+            text: 'Couldn’t collapse the notch. Try its collapse button.',
+          }),
+        )
+      }
+    }
+    window.addEventListener('keydown', escape)
+    return () => window.removeEventListener('keydown', escape)
+  }, [selection, setNotice])
   const families = sessionFamilies(
     notchRecords(
       snapshot.sessions,
@@ -132,6 +160,7 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
                       family.descendants.filter((item) => item.status === 'error').length
                     }
                     compact
+                    expandable
                     now={now}
                     onSelect={() =>
                       setSelection(selected ? null : { familyId: session.id, sessionId: null })
@@ -195,6 +224,7 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
                 key={session.id}
                 className="relative rounded-lg bg-background ring-2 ring-background"
                 title={session.name}
+                role="img"
                 aria-label={`${session.name} · ${session.project}`}
               >
                 <SessionAvatar

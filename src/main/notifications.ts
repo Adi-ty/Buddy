@@ -1,6 +1,7 @@
 import { Notification } from 'electron'
 import type { SessionRecord } from '../shared/contracts'
 import { sessionAttentionLabel } from '../shared/sessions'
+import { runTask } from './tasks'
 
 type NativeNotice = Pick<Notification, 'on' | 'show' | 'close'>
 
@@ -45,7 +46,7 @@ export class SessionNotifications {
     } else if (after.status !== 'needs-attention') return
     this.pending.set(id, after)
     if (!this.timer) {
-      this.timer = setTimeout(() => this.flush(), 500)
+      this.timer = setTimeout(() => runTask('Desktop notification', () => this.flush()), 500)
       this.timer.unref?.()
     }
   }

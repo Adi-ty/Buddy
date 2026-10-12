@@ -33,14 +33,7 @@ export function NotchSettings({ snapshot }: { snapshot: BuddySnapshot }) {
     <details className="mt-6 rounded-xl border border-border px-4 py-3 text-xs">
       <summary className="cursor-pointer text-muted-foreground">
         <span className="inline-flex items-center gap-2">
-          <Monitor size={13} /> Notch ·{' '}
-          {overlay.visible
-            ? 'Showing sessions'
-            : overlay.geometry === 'ready'
-              ? 'Ready'
-              : overlay.geometry === 'loading'
-                ? 'Finding your display…'
-                : 'Unavailable'}
+          <Monitor size={13} /> Notch placement
         </span>
       </summary>
       <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -85,14 +78,16 @@ export function NotchSettings({ snapshot }: { snapshot: BuddySnapshot }) {
             Use automatic placement
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() => void act(window.buddy.refreshDisplays())}
-        >
-          <RefreshCw /> Refresh placement
-        </Button>
+        {overlay.geometry === 'unavailable' && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => void act(window.buddy.refreshDisplays())}
+          >
+            <RefreshCw /> Retry placement
+          </Button>
+        )}
       </div>
       {overlay.displays.length > 1 && placedDisplay && (
         <p className="mt-3 text-muted-foreground" role="status">

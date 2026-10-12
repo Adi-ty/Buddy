@@ -26,6 +26,7 @@ const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
 
 export class IntegrationManager {
+  private configurationErrors = new Map<HarnessId, string>()
   private detected = new Map<
     HarnessId,
     { path: string; version: string; compatible: boolean; capable?: boolean }
@@ -98,12 +99,20 @@ export class IntegrationManager {
     const original = existsSync(target) ? readFileSync(target, 'utf8') : null
     if (original !== null && (!lstatSync(target).isFile() || lstatSync(target).isSymbolicLink()))
       throw new Error('Configuration must be a regular file')
-    const root: unknown = original === null ? {} : JSON.parse(original)
+    let root: unknown
+    try {
+      root = original === null ? {} : JSON.parse(original)
+    } catch {
+      throw new Error(
+        'Hook configuration is not valid JSON. Buddy left it unchanged; fix the file and refresh.',
+      )
+    }
     if (!object(root) || (root.hooks !== undefined && !object(root.hooks)))
       throw new Error('Existing hook configuration is invalid; Buddy left it unchanged')
     return { root, original }
   }
   private observerState(harness: HarnessId): HarnessCatalogEntry['observer'] {
+    this.configurationErrors.delete(harness)
     try {
       if (ADAPTERS[harness].installMode === 'plugin')
         return existsSync(this.target(harness)) &&
@@ -123,8 +132,14 @@ export class IntegrationManager {
         )
       if (this.events(harness).every((event) => hasObserver(hooks[event]))) return 'installed'
       return Object.values(hooks).some(hasObserver) ? 'incomplete' : 'not-installed'
-    } catch {
-      return 'not-installed'
+    } catch (error) {
+      this.configurationErrors.set(
+        harness,
+        error instanceof Error
+          ? error.message
+          : 'Configuration could not be read. Buddy left it unchanged.',
+      )
+      return 'incomplete'
     }
   }
   private events(harness: HarnessId): string[] {
@@ -202,15 +217,19 @@ export class IntegrationManager {
         if (detected) this.detected.set(entry.id, detected)
         else this.detected.delete(entry.id)
         const observer = this.observerState(entry.id)
+        const configurationError = this.configurationErrors.get(entry.id)
         return {
           ...entry,
           installation: detected ? 'installed' : 'not-found',
           version: detected?.version,
           canInstall:
             !!detected &&
+            !configurationError &&
             detected.capable &&
             (detected.compatible || this.settings?.allowedVersion(entry.id) === detected.version),
-          canInstallUnverified: !!detected && detected.capable && !detected.compatible,
+          canInstallUnverified:
+            !!detected && !configurationError && detected.capable && !detected.compatible,
+          configurationError,
           compatibility: !detected?.capable
             ? 'unsupported'
             : detected.compatible

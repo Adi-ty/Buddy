@@ -21,6 +21,8 @@ const api: BuddyAPI = {
   removeIntegration: (harness) => ipcRenderer.invoke(IPC.removeIntegration, harness),
   refreshIntegrations: () => ipcRenderer.invoke(IPC.refreshIntegrations),
   sessionAction: (id, action) => ipcRenderer.invoke(IPC.sessionAction, id, action),
+  getSessionAvatar: (id) => ipcRenderer.invoke(IPC.sessionAvatar, id),
+  setPreference: (key, enabled) => ipcRenderer.invoke(IPC.preference, key, enabled),
   clearHistory: () => ipcRenderer.invoke(IPC.clearHistory),
   setIntegrationControls: (harness, enabled) =>
     ipcRenderer.invoke(IPC.integrationControls, harness, enabled),

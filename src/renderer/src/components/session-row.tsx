@@ -19,6 +19,7 @@ export function SessionRow({
   subagentCount = 0,
   subagentFailureCount = 0,
   onFocus,
+  expandable = false,
 }: {
   session: SessionRecord
   harness: HarnessCatalogEntry
@@ -32,6 +33,7 @@ export function SessionRow({
   subagentCount?: number
   subagentFailureCount?: number
   onFocus?: () => void
+  expandable?: boolean
 }) {
   const signal = sessionNotification(summary, now)
   const detail = sessionAttentionLabel(summary)
@@ -51,8 +53,8 @@ export function SessionRow({
       <button
         tabIndex={tabIndex}
         className="session-row"
-        aria-pressed={selected}
-        aria-expanded={compact ? Boolean(children) : undefined}
+        aria-pressed={expandable ? undefined : selected}
+        aria-expanded={expandable ? Boolean(children) : undefined}
         onClick={onSelect}
         onFocus={onFocus}
         data-session-id={session.id}

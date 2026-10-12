@@ -1,7 +1,7 @@
 import { harnessFor } from '@/lib/harness'
 import { Component, useEffect, useState, type ReactNode } from 'react'
 import { MemoryRouter, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
-import { ArrowRight, Circle, History, Layers3, Plug } from 'lucide-react'
+import { ArrowRight, History, Layers3, Plug, Settings } from 'lucide-react'
 import type { BuddySnapshot } from '@shared/contracts'
 import { SessionAvatar } from '@/components/session-avatar'
 import { SessionList } from '@/components/session-list'
@@ -10,17 +10,18 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { OverlayView } from '@/components/overlay-view'
 import { PageHeading } from '@/components/ui/page-heading'
-import { NotchSettings } from '@/components/notch-settings'
+import { SettingsPage } from '@/components/settings-page'
+import { TrackingNotice } from '@/components/tracking-notice'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from '@/components/ui/notice'
-import { sessionFamilies } from '@shared/session-families'
-import { useSessionFilters } from '@/lib/session-filters'
 
 const navigation = [
   { path: '/sessions', label: 'Sessions', icon: Layers3 },
   { path: '/history', label: 'History', icon: History },
   { path: '/integrations', label: 'Integrations', icon: Plug },
+  { path: '/settings', label: 'Settings', icon: Settings },
 ] as const
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -112,37 +113,6 @@ function Dashboard() {
           ))}
         </nav>
         <div className="mt-auto p-5">
-          <div className="rounded-xl border border-border p-3.5">
-            <div className="flex items-center gap-2 text-xs font-medium">
-              <Circle
-                size={7}
-                className={
-                  snapshot.tracking.available
-                    ? 'fill-success text-success'
-                    : snapshot.tracking.phase === 'starting' || snapshot.tracking.phase === 'paused'
-                      ? 'fill-attention text-attention'
-                      : 'text-muted-foreground'
-                }
-                aria-hidden="true"
-              />{' '}
-              {snapshot.tracking.phase === 'starting'
-                ? 'Starting local observation…'
-                : snapshot.tracking.phase === 'paused'
-                  ? 'Observation paused'
-                  : snapshot.tracking.available
-                    ? 'Tracking running'
-                    : 'Tracking unavailable'}
-            </div>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              {snapshot.tracking.phase === 'starting'
-                ? 'Preparing local session observation.'
-                : snapshot.tracking.phase === 'paused'
-                  ? 'Storage is unavailable. Buddy will retry; current session states are unknown.'
-                  : snapshot.tracking.available
-                    ? 'Buddy continues observing when this window is closed.'
-                    : 'Tracking is unavailable. Check Integrations.'}
-            </p>
-          </div>
           <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground">
             <span>Made for your Mac</span>
             <span>v{snapshot.runtime.appVersion}</span>
@@ -152,10 +122,21 @@ function Dashboard() {
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="titlebar-drag h-[68px] shrink-0" aria-hidden="true" />
         <main id="main-content" className="main-content" tabIndex={-1}>
+          <TrackingNotice tracking={snapshot.tracking} />
+          {snapshot.overlay.message && (
+            <Notice
+              className="mb-4"
+              message={{
+                text: snapshot.overlay.message,
+                error: snapshot.overlay.geometry === 'unavailable',
+              }}
+            />
+          )}
           <Routes>
             <Route path="/sessions" element={<SessionsPage snapshot={snapshot} />} />
             <Route path="/history" element={<HistoryPage snapshot={snapshot} />} />
             <Route path="/integrations" element={<IntegrationsPage snapshot={snapshot} />} />
+            <Route path="/settings" element={<SettingsPage snapshot={snapshot} />} />
             <Route path="*" element={<Navigate to="/sessions" replace />} />
           </Routes>
         </main>
@@ -166,15 +147,7 @@ function Dashboard() {
 
 function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const navigate = useNavigate()
-  const filters = useSessionFilters(false)
   const connected = snapshot.harnesses.filter((item) => item.observer === 'installed')
-  const families = sessionFamilies(snapshot.sessions, [...snapshot.sessions, ...snapshot.history])
-  const sessions = families.map((family) => family.summary)
-  const subagents = snapshot.sessions.filter((session) => session.parentId).length
-  const finished = sessions.filter((item) => item.status === 'completed').length
-  const errors = sessions.filter((item) => item.status === 'error').length
-  const working = sessions.filter((item) => item.status === 'working').length
-  const attention = sessions.filter((item) => item.status === 'needs-attention').length
   return (
     <>
       <PageHeading
@@ -185,45 +158,8 @@ function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           <Plug /> Manage integrations
         </Button>
       </PageHeading>
-      <Notice
-        message={
-          snapshot.tracking.message
-            ? {
-                text: snapshot.tracking.message,
-                error: ['unavailable', 'paused'].includes(snapshot.tracking.phase),
-              }
-            : null
-        }
-        className="mb-4"
-      />
       {snapshot.sessions.length > 0 ? (
         <>
-          <div className="session-status-filters" role="group" aria-label="Quick status filters">
-            {[
-              { status: 'all', label: 'All sessions', count: sessions.length },
-              { status: 'working', label: 'Working', count: working },
-              { status: 'needs-attention', label: 'Need you', count: attention },
-              { status: 'completed', label: 'Finished', count: finished },
-              { status: 'error', label: 'Errors', count: errors },
-            ].map((item) => (
-              <button
-                key={item.status}
-                className="session-status-filter"
-                data-status={item.status}
-                aria-pressed={filters.status === item.status}
-                onClick={() => filters.update({ status: item.status })}
-              >
-                <span>{item.label}</span>
-                <strong>{item.count}</strong>
-              </button>
-            ))}
-          </div>
-          {subagents > 0 && (
-            <p className="mb-3 text-xs text-muted-foreground">
-              Includes {subagents} {subagents === 1 ? 'subagent' : 'subagents'} inside their parent
-              sessions.
-            </p>
-          )}
           <SessionList snapshot={snapshot} />
         </>
       ) : (
@@ -254,7 +190,6 @@ function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           </p>
         </section>
       )}
-      <NotchSettings snapshot={snapshot} />
     </>
   )
 }
@@ -282,8 +217,15 @@ function HistoryPage({ snapshot }: { snapshot: BuddySnapshot }) {
     <>
       <PageHeading title="History" subtitle="Sessions that have ended or stopped sending activity.">
         <Button
-          variant="outline"
+          variant="danger"
           size="sm"
+          title={
+            !snapshot.history.length
+              ? 'No past sessions to clear'
+              : !snapshot.tracking.available
+                ? 'History cannot be changed while storage is unavailable'
+                : undefined
+          }
           disabled={pending || !snapshot.history.length || !snapshot.tracking.available}
           onClick={() => setConfirm(true)}
         >
@@ -291,20 +233,26 @@ function HistoryPage({ snapshot }: { snapshot: BuddySnapshot }) {
         </Button>
       </PageHeading>
       {confirm && (
-        <div className="mb-4 rounded-xl border border-border p-4 text-sm" role="alert">
-          <p>
-            Clear {snapshot.history.length} past sessions and their saved avatars? Live sessions
-            stay connected.
-          </p>
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" disabled={pending} onClick={() => void clear()}>
-              Clear past sessions
-            </Button>
-            <Button variant="ghost" size="sm" disabled={pending} onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Clear session history?"
+          action="Clear past sessions"
+          pending={pending}
+          onConfirm={() => void clear()}
+          onCancel={() => setConfirm(false)}
+        >
+          Clear {snapshot.history.length} past sessions and their saved avatars? Live sessions stay
+          connected.
+        </ConfirmDialog>
+      )}
+      {!snapshot.history.length && (
+        <p className="mb-3 text-sm text-muted-foreground">
+          No past sessions yet. Ended sessions appear here; active sessions stay in Sessions.
+        </p>
+      )}
+      {!snapshot.tracking.available && (
+        <p className="mb-3 text-xs text-muted-foreground">
+          History cannot be changed while storage is unavailable.
+        </p>
       )}
       <Notice message={notice} className="mb-3" />
       <SessionList snapshot={snapshot} history />

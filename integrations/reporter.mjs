@@ -41,6 +41,8 @@ export function metadata(value) {
       output[field] = text
   }
   if (Number.isFinite(value.at)) output.at = value.at
+  for (const field of ['toolFailed', 'interrupted'])
+    if (typeof value[field] === 'boolean') output[field] = value[field]
   if (Array.isArray(value.attention) && value.attention.length <= 32)
     output.attention = value.attention.map((item) => ({ id: item.id, kind: item.kind }))
   return output
@@ -113,6 +115,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         tool: p.tool_name,
         requestId: p.tool_use_id,
         notificationType: p.notification_type,
+        toolFailed:
+          p.hook_event_name === 'PostToolUse' &&
+          (p.tool_response?.isError === true ||
+            p.tool_response?.is_error === true ||
+            (Number.isInteger(p.tool_response?.exit_code) && p.tool_response.exit_code !== 0)),
+        interrupted: p.is_interrupt === true || p.tool_response?.interrupted === true,
       })
     } catch {
       /* Observation is best effort. */

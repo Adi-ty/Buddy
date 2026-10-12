@@ -50,9 +50,10 @@ export function SessionList({
     const family = families.find((item) => item.summary.status === 'needs-attention')
     return family ? familyInputSession(family, snapshot.requests).id : null
   })
+  const [dismissed, setDismissed] = useState(false)
   const [page, setPage] = useState(0)
   const [showFilters, setShowFilters] = useState(false)
-  useEffect(() => setPage(0), [harness, project, status, recent, search])
+  useEffect(() => setPage(0), [harness, project, status, recent, search, groupBy, sort])
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 15_000)
@@ -66,13 +67,16 @@ export function SessionList({
         value?.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
       )) &&
     (recent === 'all' || now - item.lastSeen < Number(recent))
-  const matched = families
-    .filter(
-      (family) =>
-        (status === 'all' || family.summary.status === status) &&
-        [family.summary, ...family.members].some(matches),
-    )
+  const matchingFamilies = families.filter((family) =>
+    [family.summary, ...family.members].some(matches),
+  )
+  const matched = matchingFamilies
+    .filter((family) => status === 'all' || family.summary.status === status)
     .map((family) => family.summary)
+  const matchedSubagents = matchingFamilies
+    .filter((family) => status === 'all' || family.summary.status === status)
+    .flatMap((family) => family.members)
+    .filter((item) => item.parentId).length
   const {
     ordered: sessions,
     pages,
@@ -102,12 +106,13 @@ export function SessionList({
     },
     page,
   )
-  const selectedFamily =
-    families.find(
-      (family) =>
-        sessions.some((row) => row.id === family.root.id) &&
-        [family.root, ...family.descendants].some((item) => item.id === selection),
-    ) ?? families.find((family) => family.root.id === visible[0]?.id)
+  const selectedFamily = dismissed
+    ? undefined
+    : (families.find(
+        (family) =>
+          sessions.some((row) => row.id === family.root.id) &&
+          [family.root, ...family.descendants].some((item) => item.id === selection),
+      ) ?? families.find((family) => family.root.id === visible[0]?.id))
   const selected = selectedFamily
     ? ([selectedFamily.root, ...selectedFamily.descendants].find((item) => item.id === selection) ??
       (history ? selectedFamily.root : familyInputSession(selectedFamily, snapshot.requests)))
@@ -167,23 +172,77 @@ export function SessionList({
       setPending(false)
     }
   }
+  const select = (id: string) => {
+    setDismissed(false)
+    setSelection(id)
+  }
   return (
-    <div>
-      <Notice message={notice} className="mb-3" />
+    <div
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return
+        const details = (event.target as HTMLElement).closest(
+          'details[open]',
+        ) as HTMLDetailsElement | null
+        if (details) {
+          details.open = false
+          details.querySelector('summary')?.focus()
+        } else {
+          const rows = [
+            ...(listRef.current?.querySelectorAll<HTMLButtonElement>('button.session-row') ?? []),
+          ]
+          const target =
+            rows.find((row) => row.dataset.sessionId === selectedFamily?.root.id) ??
+            rows.find((row) => row.tabIndex === 0)
+          setDismissed(true)
+          setShowFilters(false)
+          if (target) {
+            setFocusId(target.dataset.sessionId ?? null)
+            target.focus()
+          }
+        }
+        event.stopPropagation()
+      }}
+    >
+      {!history && (
+        <div className="session-status-filters" role="group" aria-label="Quick status filters">
+          {[
+            ['all', 'All sessions'],
+            ['working', 'Working'],
+            ['needs-attention', 'Needs attention'],
+            ['completed', 'Finished'],
+            ['error', 'Errors'],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              className="session-status-filter"
+              data-status={value}
+              aria-pressed={status === value}
+              onClick={() => filters.update({ status: value })}
+            >
+              <span>{label}</span>
+              <strong>
+                {
+                  matchingFamilies.filter(
+                    (family) => value === 'all' || family.summary.status === value,
+                  ).length
+                }
+              </strong>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {history && (
-          <input
-            type="search"
-            aria-label="Search history"
-            placeholder="Search name or project…"
-            value={search}
-            onChange={(event) => {
-              filters.update({ search: event.target.value })
-              setPage(0)
-            }}
-            className="h-8 rounded-xl border border-border bg-background px-3 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        )}
+        <input
+          type="search"
+          aria-label={history ? 'Search history' : 'Search sessions'}
+          placeholder="Search name or project…"
+          value={search}
+          onChange={(event) => {
+            filters.update({ search: event.target.value })
+            setPage(0)
+          }}
+          className="h-8 rounded-xl border border-border bg-background px-3 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
         <Select
           aria-label="Filter by agent"
           value={harness}
@@ -275,8 +334,7 @@ export function SessionList({
         aria-atomic="true"
       >
         {sessions.length} of {records.length} {history ? 'past' : 'observed'} sessions
-        {(history ? snapshot.history : snapshot.sessions).some((item) => item.parentId) &&
-          ` · ${(history ? snapshot.history : snapshot.sessions).filter((item) => item.parentId).length} subagents`}
+        {matchedSubagents > 0 && ` · ${matchedSubagents} subagents`}
       </p>
       <div className="session-layout">
         <div
@@ -289,8 +347,38 @@ export function SessionList({
             )
             if (!row) return
             const isChild = !sessions.some((item) => item.id === row.dataset.sessionId)
-            if (isChild) return
-            const next = nextSessionRow(sessions, row.dataset.sessionId ?? '', event.key)
+            const visibleRows = [
+              ...event.currentTarget.querySelectorAll<HTMLButtonElement>('button.session-row'),
+            ]
+            const position = visibleRows.indexOf(row)
+            const local =
+              event.key === 'ArrowDown'
+                ? visibleRows[position + 1]
+                : event.key === 'ArrowUp'
+                  ? visibleRows[position - 1]
+                  : null
+            if (
+              event.key === 'End' &&
+              selectedFamily &&
+              sessions.at(-1)?.id === selectedFamily?.root.id &&
+              selectedFamily.descendants.length
+            ) {
+              const last = visibleRows.at(-1)
+              if (last) {
+                event.preventDefault()
+                setFocusId(last.dataset.sessionId ?? null)
+                last.focus()
+                return
+              }
+            }
+            if (local) {
+              event.preventDefault()
+              setFocusId(local.dataset.sessionId ?? null)
+              local.focus()
+              return
+            }
+            const rootId = isChild ? selectedFamily?.root.id : row.dataset.sessionId
+            const next = nextSessionRow(sessions, rootId ?? '', event.key)
             if (!next) return
             event.preventDefault()
             pendingFocus.current = next.id
@@ -338,7 +426,9 @@ export function SessionList({
                       selected={item.id === selectedFamily?.root.id}
                       tabIndex={
                         item.id ===
-                        (visible.some((row) => row.id === focusId)
+                        (visible.some((row) => row.id === focusId) ||
+                        (visible.some((row) => row.id === selectedFamily?.root.id) &&
+                          selectedFamily?.descendants.some((child) => child.id === focusId))
                           ? focusId
                           : visible.some((row) => row.id === selectedFamily?.root.id)
                             ? selectedFamily?.root.id
@@ -348,7 +438,7 @@ export function SessionList({
                       }
                       onFocus={() => setFocusId(item.id)}
                       onSelect={() =>
-                        setSelection(
+                        select(
                           history
                             ? item.id
                             : familyInputSession(familyById.get(item.id)!, snapshot.requests).id,
@@ -362,7 +452,10 @@ export function SessionList({
                           sessions={selectedFamily.descendants}
                           snapshot={snapshot}
                           selectedId={selection}
-                          onSelect={setSelection}
+                          onSelect={select}
+                          roving
+                          focusId={focusId}
+                          onFocus={setFocusId}
                           now={signalNow}
                         />
                       )}
@@ -433,6 +526,7 @@ export function SessionList({
                 Copy ID
               </Button>
             </div>
+            <Notice message={notice} className="mt-3" />
             <p className="mt-2 text-xs">
               {selected.presence === 'stale'
                 ? 'No recent activity — current state unknown'

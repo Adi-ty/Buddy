@@ -70,7 +70,10 @@ export const opencode: HarnessAdapter = {
         }
         break
       case 'session.error':
-        result = { status: 'error', action: 'observe' }
+        result =
+          p.interrupted === true
+            ? { status: 'interrupted', action: 'observe', turnActive: false }
+            : { status: 'error', action: 'observe' }
         break
       case 'permission.asked':
       case 'permission.v2.asked':

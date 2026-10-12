@@ -1,4 +1,4 @@
-export const DASHBOARD_ROUTES = ['/sessions', '/history', '/integrations'] as const
+export const DASHBOARD_ROUTES = ['/sessions', '/history', '/integrations', '/settings'] as const
 export type DashboardRoute = (typeof DASHBOARD_ROUTES)[number]
 export const SESSION_ACTIONS = ['reveal', 'copyPath', 'copyId'] as const
 export type SessionAction = (typeof SESSION_ACTIONS)[number]
@@ -25,6 +25,7 @@ export interface HarnessCatalogEntry {
   removeNotice?: string
   compatibility?: 'verified' | 'unverified' | 'unsupported'
   canInstallUnverified?: boolean
+  configurationError?: string
   lastEventAt?: number
 }
 
@@ -125,6 +126,7 @@ export interface BuddySnapshot {
   harnesses: readonly HarnessCatalogEntry[]
   avatarPreviews: readonly AvatarPreview[]
   overlay: OverlayState
+  preferences?: { desktopNotifications: boolean; launchAtLogin: boolean; canLaunchAtLogin: boolean }
   runtime: {
     appVersion: string
     electron: string
@@ -148,6 +150,8 @@ export interface BuddyAPI {
   removeIntegration(harness: HarnessId): Promise<void>
   refreshIntegrations(): Promise<void>
   sessionAction(id: string, action: SessionAction): Promise<void>
+  getSessionAvatar(id: string): Promise<string>
+  setPreference(key: 'desktopNotifications' | 'launchAtLogin', enabled: boolean): Promise<void>
   clearHistory(): Promise<void>
   setIntegrationControls(harness: HarnessId, enabled: boolean): Promise<void>
   respondToRequest(id: string, response: AgentResponse): Promise<void>
@@ -194,6 +198,8 @@ export const IPC = {
   removeIntegration: 'buddy:remove-integration',
   refreshIntegrations: 'buddy:refresh-integrations',
   sessionAction: 'buddy:session-action',
+  sessionAvatar: 'buddy:session-avatar',
+  preference: 'buddy:preference',
   clearHistory: 'buddy:clear-history',
   integrationControls: 'buddy:integration-controls',
   respondToRequest: 'buddy:respond-to-request',

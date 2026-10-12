@@ -53,6 +53,15 @@ export function RequestPanel({
   }
   const busy = sending || request.submitting
   const finalAnswers = answers.map((value, i) => (custom[i]?.trim() ? [custom[i].trim()] : value))
+  const unanswered = finalAnswers.filter((answer) => !answer.length).length
+  const cancelWriting = () => {
+    if (writing !== null) setCustom((state) => ({ ...state, [writing]: '' }))
+    setWriting(null)
+    if (activeInput.current) {
+      activeInput.current = false
+      void window.buddy.setOverlayInput(false).catch(() => {})
+    }
+  }
   const beginWriting = async (i: number) => {
     setWriting(i)
     try {
@@ -69,6 +78,13 @@ export function RequestPanel({
     <section
       className="request-panel"
       aria-label={request.kind === 'permission' ? 'Approval request' : 'Agent questions'}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && writing !== null) {
+          event.preventDefault()
+          event.stopPropagation()
+          cancelWriting()
+        }
+      }}
     >
       <div className="request-context">
         {sessionName && (
@@ -124,29 +140,34 @@ export function RequestPanel({
             ))}
             {question.custom &&
               (writing === i ? (
-                <textarea
-                  ref={input}
-                  aria-label={`Custom answer: ${question.header || question.text}`}
-                  value={custom[i] ?? ''}
-                  maxLength={4096}
-                  rows={2}
-                  className="question-input"
-                  onPointerDown={() => {
-                    if (overlay)
-                      void window.buddy
-                        .setOverlayInput(true)
-                        .then(() => {
-                          activeInput.current = true
-                          input.current?.focus()
-                        })
-                        .catch(() =>
-                          setError('Text input is unavailable. Use your agent’s window.'),
-                        )
-                  }}
-                  onChange={(event) =>
-                    setCustom((state) => ({ ...state, [i]: event.target.value }))
-                  }
-                />
+                <div className="space-y-2">
+                  <textarea
+                    ref={input}
+                    aria-label={`Custom answer: ${question.header || question.text}`}
+                    value={custom[i] ?? ''}
+                    maxLength={4096}
+                    rows={2}
+                    className="question-input"
+                    onPointerDown={() => {
+                      if (overlay)
+                        void window.buddy
+                          .setOverlayInput(true)
+                          .then(() => {
+                            activeInput.current = true
+                            input.current?.focus()
+                          })
+                          .catch(() =>
+                            setError('Text input is unavailable. Use your agent’s window.'),
+                          )
+                    }}
+                    onChange={(event) =>
+                      setCustom((state) => ({ ...state, [i]: event.target.value }))
+                    }
+                  />
+                  <Button variant="ghost" size="sm" onClick={cancelWriting}>
+                    Cancel custom answer
+                  </Button>
+                </div>
               ) : (
                 <Button variant="ghost" size="sm" onClick={() => void beginWriting(i)}>
                   Write your answer
@@ -189,6 +210,7 @@ export function RequestPanel({
           <Button
             size="sm"
             disabled={busy || finalAnswers.some((a) => !a.length)}
+            aria-describedby={unanswered ? `${request.id}-answer-hint` : undefined}
             onClick={() => void send({ answers: finalAnswers })}
           >
             Send answers
@@ -203,6 +225,17 @@ export function RequestPanel({
           Use agent window
         </Button>
       </div>
+      {request.kind === 'question' && unanswered > 0 && (
+        <p
+          id={`${request.id}-answer-hint`}
+          className="mt-2 text-xs text-muted-foreground"
+          role="status"
+        >
+          Choose or write an answer for{' '}
+          {unanswered === 1 ? 'the remaining question' : `all ${unanswered} remaining questions`} to
+          send.
+        </p>
+      )}
       {busy && (
         <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground" role="status">
           <LoaderCircle size={12} className="animate-spin" /> Waiting for the agent…

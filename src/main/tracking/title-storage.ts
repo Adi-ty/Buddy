@@ -1,4 +1,12 @@
-import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import type { DatabaseSync } from 'node:sqlite'
@@ -65,7 +73,7 @@ export class TitleStorage {
     if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) return null
     const key = `${root}:${id}`
     const location = this.locations.get(key)
-    if (location && Date.now() - location.checked < 15_000)
+    if (location && Date.now() - location.checked < (location.path ? 15_000 : 5 * 60_000))
       return location.path ? this.claudeFile(location.path, id) : null
     let directories = this.directories.get(root)
     try {
@@ -80,6 +88,7 @@ export class TitleStorage {
         this.directories.set(root, directories)
       }
     } catch {
+      this.locations.set(key, { path: null, checked: Date.now() })
       return null
     }
     let project: string | undefined
@@ -96,6 +105,7 @@ export class TitleStorage {
     ]
     for (const directory of candidates) {
       const path = join(root, directory, `${id}.jsonl`)
+      if (!existsSync(path)) continue
       const title = this.claudeFile(path, id)
       if (this.files.has(path)) {
         this.locations.set(key, { path, checked: Date.now() })

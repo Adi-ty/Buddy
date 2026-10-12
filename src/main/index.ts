@@ -32,6 +32,8 @@ import { ProfileSettings } from './settings'
 import { SessionNotifications } from './notifications'
 import { performSessionAction } from './session-actions'
 import { sessionFamilies } from '../shared/session-families'
+import { runTask } from './tasks'
+import { observeWake } from './tracking/wake'
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = resolve(mainDirectory, '../renderer')
@@ -63,6 +65,7 @@ let settings: ProfileSettings | null = null
 let notifications: SessionNotifications | null = null
 let lastDetection = 0
 let expiryTimer: ReturnType<typeof setInterval> | null = null
+let stopWake: (() => void) | null = null
 let publishTimer: ReturnType<typeof setTimeout> | null = null
 let broadcastTimer: ReturnType<typeof setTimeout> | null = null
 let setupBusy = false
@@ -205,8 +208,9 @@ function createDashboard(route?: DashboardRoute): void {
     if (isMainFrame) console.error(`Dashboard failed to load (${code}): ${description} ${url}`)
   })
 
-  if (developmentURL) void window.loadURL(developmentURL)
-  else void window.loadURL(rendererURL)
+  void window
+    .loadURL(developmentURL ?? rendererURL)
+    .catch((error) => console.error('Dashboard load failed', error))
 }
 
 function createOverlayWindow(): BrowserWindow {
@@ -245,12 +249,14 @@ function createOverlayWindow(): BrowserWindow {
     skipTransformProcessType: true,
   })
   window.setIgnoreMouseEvents(true, { forward: true })
-  void window.loadURL(`${developmentURL ?? rendererURL}#overlay`)
+  void window
+    .loadURL(`${developmentURL ?? rendererURL}#overlay`)
+    .catch((error) => console.error('Notch load failed', error))
   return window
 }
 
 function installMenu(): void {
-  const pages = ['Sessions', 'History', 'Integrations']
+  const pages = ['Sessions', 'History', 'Integrations', 'Settings']
   const navigation: MenuItemConstructorOptions[] = DASHBOARD_ROUTES.map((route, index) => ({
     label: pages[index],
     accelerator: `CmdOrCtrl+${index + 1}`,
@@ -301,7 +307,7 @@ function broadcast(): void {
   if (broadcastTimer) return
   broadcastTimer = setTimeout(() => {
     broadcastTimer = null
-    broadcastNow()
+    runTask('Snapshot broadcast', broadcastNow)
   }, 100)
 }
 
@@ -324,7 +330,7 @@ function scheduleSessions(): void {
   if (publishTimer) return
   publishTimer = setTimeout(() => {
     publishTimer = null
-    publishSessions()
+    runTask('Session publish', publishSessions)
   }, 100)
 }
 
@@ -338,7 +344,7 @@ function observeSession(event: Observation): void {
 
 function publishSessions(): void {
   if (!store) return
-  const records = store.snapshot()
+  const records = store.snapshot(false)
   requests?.reconcile(records.sessions)
   const pending = [...(requests?.snapshot() ?? []), ...(codexServer?.snapshot() ?? [])]
   const sessions = records.sessions.map((record) => {
@@ -359,17 +365,18 @@ function publishSessions(): void {
   snapshot = {
     ...snapshot,
     ...records,
+    preferences: {
+      desktopNotifications: settings?.desktopNotifications ?? true,
+      launchAtLogin: app.isPackaged && app.getLoginItemSettings().openAtLogin,
+      canLaunchAtLogin: app.isPackaged,
+    },
     sessions,
     requests: pending,
     coverage: records.sessions.length || records.history.length ? 'partial' : 'not-connected',
     tracking: {
       available: store.message === null,
       phase: store.message ? 'paused' : 'running',
-      message:
-        store.message ??
-        (store.capacityEvictions
-          ? 'Session capacity reached; the oldest observations were omitted.'
-          : null),
+      message: store.message,
       droppedObservations: store.droppedObservations,
       capacityEvictions: store.capacityEvictions,
     },
@@ -396,7 +403,7 @@ function publishSessions(): void {
     }),
   }
   overlay?.setLiveSessions(sessions, [...sessions, ...records.history])
-  broadcastNow()
+  broadcast()
 }
 
 async function refreshIntegrations(): Promise<void> {
@@ -453,6 +460,7 @@ function installTray(): void {
             try {
               settings?.setDesktopNotifications(item.checked)
               if (!item.checked) notifications?.reset()
+              publishSessions()
             } catch (error) {
               console.error('Notification setting could not be saved', error)
             }
@@ -465,6 +473,7 @@ function installTray(): void {
           checked: app.isPackaged && app.getLoginItemSettings().openAtLogin,
           click: (item) => {
             if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: item.checked })
+            publishSessions()
           },
         },
         { label: 'Quit Buddy', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
@@ -613,6 +622,27 @@ if (!app.requestSingleInstanceLock()) {
           showItemInFolder: (path) => shell.showItemInFolder(path),
         })
       })
+      ipcMain.handle(IPC.sessionAvatar, (event, ...args: unknown[]) => {
+        trustedRequest(event)
+        if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length > 256)
+          throw new Error('Invalid avatar request')
+        const avatar = store?.get(args[0])?.dataUri
+        if (!avatar) throw new Error('Session is no longer available')
+        return avatar
+      })
+      ipcMain.handle(IPC.preference, (event, ...args: unknown[]) => {
+        trustedRequest(event, true)
+        const [key, enabled] = args
+        if (args.length !== 2 || typeof enabled !== 'boolean' || !settings)
+          throw new Error('Invalid preference')
+        if (key === 'desktopNotifications') {
+          settings.setDesktopNotifications(enabled)
+          if (!enabled) notifications?.reset()
+        } else if (key === 'launchAtLogin' && app.isPackaged) {
+          app.setLoginItemSettings({ openAtLogin: enabled })
+        } else throw new Error('This preference is unavailable in this build')
+        publishSessions()
+      })
       ipcMain.handle(IPC.integrationControls, async (event, ...args: unknown[]) => {
         trustedRequest(event, true)
         if (args.length !== 2 || !isHarnessId(args[0]) || typeof args[1] !== 'boolean')
@@ -679,7 +709,6 @@ if (!app.requestSingleInstanceLock()) {
           (harness, id, cwd) => names?.lookup(harness, id, cwd) ?? null,
           { flushDelayMs: 200, onPersistenceError: () => scheduleSessions() },
         )
-        store.refreshNames()
         bridge = new ObservationBridge(profile, (event) => {
           try {
             observeSession(event)
@@ -754,8 +783,7 @@ if (!app.requestSingleInstanceLock()) {
             /* Keep last durable state visible. */
           }
         }, 15_000)
-        powerMonitor.on('resume', reconcileAfterSleep)
-        powerMonitor.on('unlock-screen', reconcileAfterSleep)
+        stopWake = observeWake(powerMonitor, store, publishSessions)
       } catch (error) {
         console.error('Local tracking failed to start', error)
         bridge?.dispose()
@@ -789,8 +817,7 @@ if (!app.requestSingleInstanceLock()) {
         store?.dispose()
         names?.dispose()
         notifications?.reset()
-        powerMonitor.removeListener('resume', reconcileAfterSleep)
-        powerMonitor.removeListener('unlock-screen', reconcileAfterSleep)
+        stopWake?.()
         overlay?.dispose()
         tray?.destroy()
       })
@@ -803,12 +830,4 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
-}
-
-function reconcileAfterSleep(): void {
-  try {
-    if (store?.expire(Date.now(), true)) publishSessions()
-  } catch {
-    /* Recovery awaits a fresh provider event. */
-  }
 }

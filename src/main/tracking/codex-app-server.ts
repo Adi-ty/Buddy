@@ -4,6 +4,7 @@ import { textField, type Observation } from './events'
 import { codexRequest, isObject, isRpcId, type CodexRequest } from './codex-request'
 import { CodexRpcClient, codexSocketPath } from './codex-rpc'
 import { validateResponse } from './request-response'
+import { runTask } from '../tasks'
 
 interface Thread {
   id: string
@@ -100,10 +101,10 @@ export class CodexAppServer {
       request.timer = undefined
       request.view = {
         ...request.view,
-        submitting: false,
+        submitting: true,
         error: 'Codex hasn’t confirmed this response. Check its window before continuing.',
       }
-      this.options.changed()
+      runTask('Codex request publish', this.options.changed)
     }, 8000)
     this.options.changed()
   }

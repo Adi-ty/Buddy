@@ -44,7 +44,11 @@ export const codex: HarnessAdapter = {
         ...(child !== ctx.sessionId ? { sessionId: child, parentId: ctx.sessionId } : {}),
       }
     }
-    return { ...rule, clearPermissionHints: event === 'PreToolUse' }
+    return {
+      ...rule,
+      ...(event === 'PostToolUse' && p.toolFailed === true ? { status: 'error' as const } : {}),
+      clearPermissionHints: event === 'PreToolUse',
+    }
   },
   displayName: (ordinal) => `Codex ${ordinal + 1}`,
   setupCopy(kind, target) {

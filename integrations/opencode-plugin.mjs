@@ -166,6 +166,7 @@ export default async function BuddyPlugin({ client, directory }) {
       id: extra.id ?? randomUUID(),
       at: lastStamp,
       status: p.status?.type,
+      interrupted: event === 'session.error' && p.error?.name === 'MessageAbortedError',
       requestId: event.endsWith('asked') ? p.id : (p.requestID ?? p.permissionID),
       ...extra,
     })

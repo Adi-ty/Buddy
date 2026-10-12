@@ -78,7 +78,7 @@ export function parseNativeDisplays(output: string): NativeDisplay[] {
 
 // Both APIs use logical coordinates, with opposite Y axes. Translate within the
 // matched display, so negative origins and primary-display changes are safe.
-export function nativeRectToElectron(rect: Rect, nativeFrame: Rect, electronBounds: Rect): Rect {
+function nativeRectToElectron(rect: Rect, nativeFrame: Rect, electronBounds: Rect): Rect {
   const sx = electronBounds.width / nativeFrame.width
   const sy = electronBounds.height / nativeFrame.height
   return {

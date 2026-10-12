@@ -9,6 +9,7 @@ import {
   shelfBounds,
 } from './display-geometry'
 import { COMPLETION_NOTICE_MS, notchRecords } from '../shared/sessions'
+import { runTask } from './tasks'
 
 interface OverlayHost {
   getState(): OverlayState
@@ -59,6 +60,16 @@ export class OverlayController {
     private readonly host: OverlayHost,
     private readonly mainDirectory: string,
   ) {}
+
+  private task(action: () => void): void {
+    runTask('Notch update', action, () => {
+      this.hide()
+      this.update({
+        geometry: 'unavailable',
+        message: 'The notch could not update. Retry placement in Settings.',
+      })
+    })
+  }
 
   start(): void {
     if (process.platform !== 'darwin') {
@@ -124,7 +135,7 @@ export class OverlayController {
       .filter((at) => at > Date.now())
     if (deadlines.length)
       this.completionTimer = setTimeout(
-        () => this.setLiveSessions(this.sessions, this.context),
+        () => this.task(() => this.setLiveSessions(this.sessions, this.context)),
         Math.min(...deadlines) - Date.now() + 1,
       )
     if (!this.displayedIds.size && this.host.getState().expanded) this.update({ expanded: false })
@@ -175,7 +186,7 @@ export class OverlayController {
     if (this.retry) clearTimeout(this.retry)
     this.debounce = setTimeout(() => {
       this.debounce = null
-      this.readDisplays(this.generation)
+      this.task(() => this.readDisplays(this.generation))
     }, 180)
   }
 
@@ -212,7 +223,7 @@ export class OverlayController {
             this.retry = setTimeout(
               () => {
                 this.retry = null
-                this.readDisplays(this.generation)
+                this.task(() => this.readDisplays(this.generation))
               },
               1000 * 2 ** this.failures,
             )
@@ -266,7 +277,7 @@ export class OverlayController {
         this.ready = true
         this.apply()
       })
-      window.webContents.on('render-process-gone', () => {
+      const rendererFailed = () => {
         window.destroy()
         this.window = null
         this.ready = false
@@ -284,11 +295,15 @@ export class OverlayController {
           this.retry = setTimeout(
             () => {
               this.retry = null
-              this.apply()
+              this.task(() => this.apply())
             },
             1000 * 2 ** this.rendererFailures,
           )
         }
+      }
+      window.webContents.on('render-process-gone', rendererFailed)
+      window.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+        if (isMainFrame && code !== -3 && !window.isDestroyed()) rendererFailed()
       })
     }
     this.window.setBounds(bounds, false)
@@ -312,7 +327,8 @@ export class OverlayController {
           ? null
           : 'Selected display disconnected. Using an available display.',
     })
-    if (!this.polling && this.ready) this.polling = setInterval(() => this.checkPointer(), 200)
+    if (!this.polling && this.ready)
+      this.polling = setInterval(() => this.task(() => this.checkPointer()), 200)
   }
 
   private checkPointer(): void {

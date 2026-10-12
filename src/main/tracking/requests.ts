@@ -1,8 +1,16 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { chmodSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  renameSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { socketDirectory } from './socket-directory'
 import type {
   AgentQuestion,
   AgentRequest,
@@ -12,6 +20,7 @@ import type {
 } from '../../shared/contracts'
 import { isHarnessId } from '../../shared/harnesses'
 import { validateResponse } from './request-response'
+import { runTask } from '../tasks'
 
 const object = (p: unknown): p is Record<string, unknown> =>
   !!p && typeof p === 'object' && !Array.isArray(p)
@@ -57,12 +66,7 @@ export class RequestBridge {
       decision: 'allow' | 'reject' | 'native',
     ) => void,
   ) {
-    const digest = createHash('sha256').update(profile).digest('hex').slice(0, 12)
-    this.socketPath = join(
-      process.platform === 'darwin' ? '/tmp' : tmpdir(),
-      `buddy-${process.getuid?.() ?? 'local'}-${digest}`,
-      'controls.sock',
-    )
+    this.socketPath = join(socketDirectory(profile), 'controls.sock')
     this.server = createServer((socket) => this.accept(socket))
   }
   async start(): Promise<void> {
@@ -126,9 +130,9 @@ export class RequestBridge {
     if (!p) return
     clearTimeout(p.timer)
     this.pending.delete(id)
-    this.resolved(this.context(p), decision)
+    runTask('Request resolution', () => this.resolved(this.context(p), decision))
     if (notify) this.send(p.owner, { op: 'retired', id: p.sourceId })
-    this.changed()
+    runTask('Request publish', this.changed)
   }
   cancel(harness: HarnessId): void {
     for (const [id, p] of this.pending)
@@ -368,6 +372,7 @@ export class RequestBridge {
     this.server.close()
     try {
       unlinkSync(this.socketPath)
+      rmdirSync(dirname(this.socketPath))
     } catch {
       /* Already stopped. */
     }

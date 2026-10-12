@@ -11,9 +11,12 @@ import { useNotice } from '@/lib/use-notice'
 import { useEffect } from 'react'
 import { relativeTime } from '@shared/session-families'
 import { errorMessage } from '@shared/error-message'
+import { ConfirmDialog } from './ui/confirm-dialog'
 
 export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   const [pending, setPending] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<HarnessId | null>(null)
+  const [noticeScope, setNoticeScope] = useState<HarnessId | null>(null)
   const { notice, setNotice } = useNotice()
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
@@ -31,6 +34,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
     harness?: HarnessId,
   ) => {
     setPending(harness ?? 'refresh')
+    setNoticeScope(harness ?? null)
     setNotice(null)
     try {
       if (action === 'refresh') {
@@ -52,7 +56,10 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         }
         if (action === 'install' || action === 'install-unverified')
           await window.buddy.installIntegration(harness, action === 'install-unverified')
-        else await window.buddy.removeIntegration(harness)
+        else {
+          await window.buddy.removeIntegration(harness)
+          setRemoving(null)
+        }
         const entry = harnessFor(snapshot, harness)
         setNotice({
           error: false,
@@ -88,18 +95,20 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           Refresh
         </Button>
       </PageHeading>
-      <Notice
-        className="mb-4"
-        message={
-          notice ??
-          (snapshot.tracking.message
-            ? {
-                text: snapshot.tracking.message,
-                error: ['unavailable', 'paused'].includes(snapshot.tracking.phase),
-              }
-            : null)
-        }
-      />
+      <Notice className="mb-4" message={noticeScope === null ? notice : null} />
+      {removing && (
+        <ConfirmDialog
+          title={`Remove ${harnessFor(snapshot, removing).name} observer?`}
+          action="Remove observer"
+          pending={pending !== null}
+          onCancel={() => setRemoving(null)}
+          onConfirm={() => void act('remove', removing)}
+        >
+          Session tracking and notch replies will stop for this agent. Your agent’s other settings
+          will be retained.
+          <Notice className="mt-3" message={noticeScope === removing ? notice : null} />
+        </ConfirmDialog>
+      )}
       <div className="space-y-3">
         {snapshot.harnesses.map((harness) => {
           const installed = harness.observer === 'installed'
@@ -143,6 +152,14 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                       ? 'Connected. Sessions are appearing in your notch.'
                       : harness.setup}
                   </p>
+                  <Notice
+                    className="mt-3"
+                    message={
+                      harness.configurationError
+                        ? { error: true, text: harness.configurationError }
+                        : null
+                    }
+                  />
                   {harness.compatibility === 'unverified' && (
                     <p className="mt-2 text-xs leading-5 text-attention">
                       Version {harness.version} isn’t verified — Buddy’s event contract may
@@ -203,19 +220,19 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                           ? 'Enabled. Buddy shows commands and questions only while they await your response.'
                           : 'Review each request and allow once, deny, or answer. Your agent’s existing permission rules still apply.'}
                       </p>
-                      {harness.id === 'codex' && harness.controls && (
-                        <p
-                          className={`mt-2 flex items-center gap-2 text-xs ${harness.controlsConnection === 'connected' ? 'text-success' : 'text-muted-foreground'}`}
-                          role="status"
-                        >
-                          {harness.controlsConnection === 'connected' ? (
-                            <Check size={12} />
-                          ) : harness.controlsConnection === 'connecting' ? (
-                            <LoaderCircle size={12} className="animate-spin" />
-                          ) : null}
-                          {harness.controlsMessage}
-                        </p>
-                      )}
+                      {harness.id === 'codex' &&
+                        harness.controls &&
+                        harness.controlsConnection !== 'connected' && (
+                          <p
+                            className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"
+                            role="status"
+                          >
+                            {harness.controlsConnection === 'connecting' ? (
+                              <LoaderCircle size={12} className="animate-spin" />
+                            ) : null}
+                            {harness.controlsMessage}
+                          </p>
+                        )}
                     </div>
                   )}
                   <div className="mt-4 flex gap-2">
@@ -245,10 +262,10 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                     )}
                     {(installed || incomplete) && (
                       <Button
-                        variant="ghost"
+                        variant="danger"
                         size="sm"
                         disabled={pending !== null}
-                        onClick={() => void act('remove', harness.id)}
+                        onClick={() => setRemoving(harness.id)}
                       >
                         {pending === harness.id ? (
                           <LoaderCircle className="animate-spin" />
@@ -259,6 +276,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                       </Button>
                     )}
                   </div>
+                  <Notice className="mt-3" message={noticeScope === harness.id ? notice : null} />
                 </div>
               </div>
             </section>

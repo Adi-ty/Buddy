@@ -1,16 +1,17 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { socketDirectory } from './socket-directory'
 import { normalizeObservation, type Observation } from './events'
 
 export class ObservationBridge {
@@ -23,11 +24,7 @@ export class ObservationBridge {
     private readonly profile: string,
     private readonly onObservation: (event: Observation) => void,
   ) {
-    const digest = createHash('sha256').update(profile).digest('hex').slice(0, 12)
-    this.directory = join(
-      process.platform === 'darwin' ? '/tmp' : tmpdir(),
-      `buddy-${process.getuid?.() ?? 'local'}-${digest}`,
-    )
+    this.directory = socketDirectory(profile)
     this.socketPath = join(this.directory, 'events.sock')
     this.server = createServer({ allowHalfOpen: true }, (socket) => {
       if (this.sockets.size >= 32) {
@@ -104,6 +101,7 @@ export class ObservationBridge {
     this.server.close()
     try {
       unlinkSync(this.socketPath)
+      rmdirSync(this.directory)
     } catch {
       /* Already gone. */
     }

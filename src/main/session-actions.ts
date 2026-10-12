@@ -20,6 +20,10 @@ export function performSessionAction(
   if (action === 'copyId') return native.writeText(record.providerSessionId)
   if (!record.cwd || !isAbsolute(record.cwd)) throw new Error('Project path is unavailable')
   if (action === 'copyPath') return native.writeText(record.cwd)
-  if (!statSync(record.cwd).isDirectory()) throw new Error('Project folder is unavailable')
+  try {
+    if (!statSync(record.cwd).isDirectory()) throw new Error('Missing folder')
+  } catch {
+    throw new Error('Project folder is unavailable. It may have moved or been deleted.')
+  }
   native.showItemInFolder(record.cwd)
 }

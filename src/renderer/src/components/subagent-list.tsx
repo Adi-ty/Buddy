@@ -12,6 +12,9 @@ export function SubagentList({
   onSelect,
   now,
   collapsible = false,
+  roving = false,
+  focusId,
+  onFocus,
 }: {
   root: SessionRecord
   sessions: readonly SessionRecord[]
@@ -20,6 +23,9 @@ export function SubagentList({
   onSelect: (id: string) => void
   now: number
   collapsible?: boolean
+  roving?: boolean
+  focusId?: string | null
+  onFocus?: (id: string) => void
 }) {
   if (!sessions.length) return null
   const working = sessions.filter(
@@ -48,6 +54,8 @@ export function SubagentList({
             session={child}
             harness={harnessFor(snapshot, child.harness)}
             compact
+            tabIndex={roving ? (focusId === child.id ? 0 : -1) : undefined}
+            onFocus={() => onFocus?.(child.id)}
             selected={selectedId === child.id}
             now={now}
             onSelect={() => onSelect(child.id)}

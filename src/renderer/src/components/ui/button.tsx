@@ -11,6 +11,7 @@ const buttonVariants = cva(
         default: 'bg-primary text-primary-foreground hover:bg-primary/90',
         outline: 'border border-border bg-transparent text-foreground hover:bg-accent',
         ghost: 'text-muted-foreground hover:bg-accent hover:text-foreground',
+        danger: 'bg-danger text-white hover:bg-danger/90',
       },
       size: { default: 'h-10 px-4 py-2', sm: 'h-8 px-3', icon: 'size-9' },
     },
@@ -35,4 +36,4 @@ function Button({
   )
 }
 
-export { Button, buttonVariants }
+export { Button }
