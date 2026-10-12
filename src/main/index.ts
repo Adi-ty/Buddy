@@ -39,6 +39,10 @@ const mainDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = resolve(mainDirectory, '../renderer')
 const rendererURL = 'buddy://app/index.html'
 const developmentURL = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined
+const resourceDirectory = app.isPackaged
+  ? process.resourcesPath
+  : resolve(mainDirectory, '../../resources')
+const appIconPath = join(resourceDirectory, 'buddy-brand.png')
 
 app.setName('Buddy')
 protocol.registerSchemesAsPrivileged([
@@ -165,6 +169,7 @@ function createDashboard(route?: DashboardRoute): void {
 
   const window = new BrowserWindow({
     title: 'Buddy',
+    icon: appIconPath,
     width: 1160,
     height: 780,
     minWidth: 860,
@@ -419,10 +424,8 @@ async function refreshIntegrations(): Promise<void> {
 }
 
 function installTray(): void {
-  const iconPath = app.isPackaged
-    ? join(process.resourcesPath, 'trayTemplate.png')
-    : resolve(mainDirectory, '../../resources/trayTemplate.png')
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 })
+  // Matching Template/@2x names let Electron load the Retina representation.
+  const icon = nativeImage.createFromPath(join(resourceDirectory, 'buddyTrayTemplate.png'))
   icon.setTemplateImage(true)
   tray = new Tray(icon)
   const showMenu = (): void => {
@@ -687,7 +690,10 @@ if (!app.requestSingleInstanceLock()) {
         publishSessions()
       })
       installMenu()
-      if (process.platform === 'darwin') app.dock?.hide()
+      if (process.platform === 'darwin') {
+        app.dock?.setIcon(appIconPath)
+        app.dock?.hide()
+      }
       installTray()
       overlay.start()
       const profile = app.getPath('userData')

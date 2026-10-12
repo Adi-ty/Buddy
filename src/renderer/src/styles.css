@@ -309,32 +309,6 @@
     background: var(--accent);
     color: var(--foreground);
   }
-  .buddy-mark {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 33px;
-    height: 33px;
-    border-radius: 12px;
-    background: var(--primary);
-  }
-  .buddy-mark span {
-    width: 4px;
-    height: 7px;
-    border-radius: 4px;
-    background: var(--primary-foreground);
-  }
-  .buddy-mark::after {
-    content: '';
-    position: absolute;
-    bottom: 7px;
-    width: 8px;
-    height: 3px;
-    border-bottom: 2px solid var(--primary-foreground);
-    border-radius: 50%;
-  }
   .empty-stage {
     padding: 52px 24px 38px;
     border: 1px solid var(--border);

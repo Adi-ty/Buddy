@@ -14,10 +14,15 @@ extraResources:
     to: native/buddy-display
   - from: integrations
     to: integrations
-  - from: resources/trayTemplate.png
-    to: trayTemplate.png
+  - from: resources/buddy-brand.png
+    to: buddy-brand.png
+  - from: resources/buddyTrayTemplate.png
+    to: buddyTrayTemplate.png
+  - from: resources/buddyTrayTemplate@2x.png
+    to: buddyTrayTemplate@2x.png
 asar: true
 mac:
+  icon: resources/buddy-app.icns
   extendInfo:
     LSUIElement: true
   category: public.app-category.developer-tools

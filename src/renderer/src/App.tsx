@@ -16,6 +16,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useBuddySnapshot } from '@/lib/use-buddy-snapshot'
 import { useNotice } from '@/lib/use-notice'
 import { Notice } from '@/components/ui/notice'
+import buddyLogo from '../../../resources/buddy-brand.png'
 
 const navigation = [
   { path: '/sessions', label: 'Sessions', icon: Layers3 },
@@ -91,10 +92,14 @@ function Dashboard() {
       <aside className="sidebar">
         <div className="titlebar-drag h-[68px]" aria-hidden="true" />
         <div className="flex items-center gap-3 px-6 pb-8 pt-3">
-          <div className="buddy-mark" aria-hidden="true">
-            <span />
-            <span />
-          </div>
+          <img
+            src={buddyLogo}
+            alt=""
+            width={44}
+            height={44}
+            className="shrink-0 rounded-xl object-contain"
+            aria-hidden="true"
+          />
           <div>
             <div className="text-lg font-semibold tracking-tight">Buddy</div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">Your agents, at a glance</div>
