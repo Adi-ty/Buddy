@@ -173,6 +173,10 @@ test('version detection retains prerelease and build identities for exact-versio
   assert.equal(parseCliVersion('Claude 2.1.295'), '2.1.295')
   assert(isCliVersion('1.18.35-beta'))
   assert(!isCliVersion('not a version'))
+  assert(ADAPTERS.opencode.compat.matches('2.0.0'))
+  assert(ADAPTERS.opencode.compat.matches('2.4.1-beta.2'))
+  assert(!ADAPTERS.opencode.compat.matches('1.18.35'))
+  assert(!ADAPTERS.opencode.compat.supports('1.18.35'))
 })
 
 test('failure and interruption metadata use each harness contract without fabricated hook events', () => {

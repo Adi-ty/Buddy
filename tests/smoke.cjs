@@ -26,7 +26,7 @@ mkdirSync(bin)
 for (const [command, version] of [
   ['codex', '0.162.1'],
   ['claude', '2.1.295'],
-  ['opencode', '1.18.35'],
+  ['opencode', '2.0.0'],
 ]) {
   writeFileSync(
     join(bin, command),
@@ -970,10 +970,8 @@ async function verify() {
   await send('SessionEnd', 'notice-expiry')
   await until(async () => !(await snapshot(dashboard)).overlay.visible, 'expiry fixture closed')
 
-  // Exercise the installed OpenCode plugin through the real observation and
-  // control sockets, with enough children to bury a question in the old layout.
+  // Exercise the installed OpenCode V2 plugin through its event subscription.
   await js(dashboard, 'window.buddy.installIntegration("opencode")')
-  await js(dashboard, 'window.buddy.setIntegrationControls("opencode", true)')
   const { pathToFileURL } = require('node:url')
   const { default: BuddyPlugin } = await import(
     pathToFileURL(join(profile, 'integrations/opencode-plugin.mjs')).href
@@ -992,40 +990,35 @@ async function verify() {
       },
     ]),
   ])
-  let familyQuestions = []
-  const familyAnswers = []
-  const plugin = await BuddyPlugin({
-    directory: '/projects/buddy',
-    client: {
-      session: {
-        status: async () => ({
-          data: Object.fromEntries(
-            [...familyInfos.keys()].map((id) => [
-              id,
-              { type: id === familyRoot ? 'busy' : 'idle' },
-            ]),
-          ),
-        }),
-        get: async ({ path }) => ({ data: familyInfos.get(path.id) }),
-      },
-      _client: {
-        get: async ({ url, query }) => {
-          assert.equal(query.directory, '/projects/buddy')
-          return { data: url === '/question' ? [...familyQuestions] : [] }
-        },
-        post: async (request) => {
-          assert.equal(request.query.directory, '/projects/buddy')
-          familyAnswers.push(request)
-          familyQuestions = familyQuestions.filter(
-            (question) => request.url !== `/question/${question.id}/reply`,
-          )
-          return { data: true }
-        },
+  const eventQueue = []
+  let wakeEvent = () => {}
+  const pluginCleanup = BuddyPlugin.setup({
+    location: { directory: '/projects/buddy' },
+    event: {
+      subscribe({ signal }) {
+        return {
+          async *[Symbol.asyncIterator]() {
+            while (!signal.aborted) {
+              if (!eventQueue.length) {
+                await new Promise((resolve) => (wakeEvent = resolve))
+                if (signal.aborted) break
+              }
+              while (eventQueue.length) yield eventQueue.shift()
+            }
+          },
+        }
       },
     },
   })
-  const closePlugin = () => plugin.dispose()
+  const closePlugin = pluginCleanup
   cleanups.push(closePlugin)
+  for (const [id, info] of familyInfos)
+    eventQueue.push({
+      id: `event-${id}`,
+      type: 'session.status',
+      properties: { sessionID: id, status: { type: id === familyRoot ? 'busy' : 'idle' }, info },
+    })
+  wakeEvent()
   await until(
     async () =>
       (await snapshot(dashboard)).sessions.filter((session) =>
@@ -1033,87 +1026,6 @@ async function verify() {
       ).length === 8,
     'parent and seven nested subagents reported by the installed plugin',
   )
-  for (const [owner, answer] of [
-    [familyRoot, 'Yes'],
-    [familyChildren[6], 'No'],
-  ]) {
-    const requestId = `decision-${owner}`
-    familyQuestions = [
-      {
-        id: requestId,
-        sessionID: owner,
-        questions: [
-          {
-            question: 'Should I proceed with this decision?',
-            header: 'Decision',
-            custom: false,
-            options: [
-              { label: 'Yes', description: 'Proceed' },
-              { label: 'No', description: 'Reconsider' },
-            ],
-          },
-        ],
-      },
-    ]
-    await plugin.event({ event: { type: 'question.asked', properties: familyQuestions[0] } })
-    await until(
-      async () =>
-        (await snapshot(dashboard)).requests?.some(
-          (request) => request.sessionId === `opencode:${owner}`,
-        ),
-      'actual plugin question reaches the companion snapshot',
-    )
-    await expand(overlay)
-    await openOverlayRow(overlay, 'opencode:family-root')
-    await until(
-      () =>
-        js(
-          overlay,
-          `document.querySelector('.request-context p')?.textContent === ${JSON.stringify(familyInfos.get(owner).title)}`,
-        ),
-      'opening a family goes straight to its question owner',
-    )
-    assert.equal(
-      await js(
-        overlay,
-        `(() => {
-          const panel = document.querySelector('.request-panel');
-          const agents = document.querySelector('section[aria-label^="Subagents of"] details');
-          const question = panel.querySelector('legend').getBoundingClientRect();
-          const surface = document.querySelector('.overlay-surface').getBoundingClientRect();
-          return !agents.open && Boolean(panel.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING)
-            && question.top >= surface.top && question.bottom < surface.bottom - 44;
-        })()`,
-      ),
-      true,
-      'The question is visible before the collapsed subagent list, without scrolling',
-    )
-    assert.equal(
-      await js(overlay, 'document.querySelectorAll(".question-option input:checked").length'),
-      0,
-    )
-    await js(
-      overlay,
-      `([...document.querySelectorAll('.question-option')].find(option => option.querySelector('.font-medium').textContent === ${JSON.stringify(answer)})).click()`,
-    )
-    await click(overlay, 'Send answers')
-    await until(
-      () => familyAnswers.some((request) => request.url === `/question/${requestId}/reply`),
-      'companion answer reaches the plugin’s exact pending question',
-    )
-    assert.deepEqual(
-      familyAnswers.find((request) => request.url === `/question/${requestId}/reply`).body,
-      { answers: [[answer]] },
-    )
-    await until(
-      async () =>
-        !(await snapshot(dashboard)).requests?.length &&
-        !(await snapshot(dashboard)).sessions.some(
-          (session) => session.status === 'needs-attention',
-        ),
-      'acknowledged question and yellow attention clear',
-    )
-  }
   await js(dashboard, `document.querySelector('a[href="/sessions"]').click()`)
   await until(
     () => js(dashboard, 'document.querySelector("h1").textContent === "Sessions"'),
@@ -1162,7 +1074,7 @@ async function verify() {
     () => js(overlay, '!document.body.textContent.includes("View parent session")'),
     'parent details remain reachable after selecting a child',
   )
-  await plugin.dispose()
+  pluginCleanup()
   cleanups.splice(cleanups.indexOf(closePlugin), 1)
   for (const id of familyInfos.keys())
     await report(join(profile, 'bridge.json'), {

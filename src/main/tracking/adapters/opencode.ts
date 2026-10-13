@@ -6,12 +6,16 @@ export const opencode: HarnessAdapter = {
   id: 'opencode',
   name: 'OpenCode',
   shortLabel: 'OC',
-  description: 'Local plugin events first. Server connections have their own coverage.',
+  description: 'OpenCode V2 plugin event tracking.',
   source: 'plugin',
   installMode: 'plugin',
   pluginAsset: 'opencode-plugin.mjs',
   cli: { command: 'opencode', extraPaths: [join(homedir(), '.opencode/bin')] },
-  compat: { verified: '1.18.35' },
+  compat: {
+    verified: '2.x',
+    matches: (version) => /^2\./.test(version),
+    supports: (version) => /^2\./.test(version),
+  },
   target: ({ development }) =>
     join(
       process.env.OPENCODE_CONFIG_DIR ||
@@ -100,7 +104,7 @@ export const opencode: HarnessAdapter = {
       return 'Observer removed. Restart OpenCode to finish disconnecting.'
     if (kind === 'missingCli') return 'Install this CLI, then refresh.'
     if (kind === 'unverified')
-      return 'This version is unverified. Buddy may misreport activity; request recovery may be unavailable.'
+      return 'This OpenCode version is unsupported. Buddy requires OpenCode V2.'
     return `Adds a local observer at ${target}. Restart OpenCode to load it.`
   },
 }

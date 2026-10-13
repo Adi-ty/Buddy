@@ -26,7 +26,12 @@ export interface HarnessAdapter {
   description: string
   source: 'hooks' | 'plugin'
   cli: { command: string; extraPaths: string[] }
-  compat: { verified: string; probe?(path: string): Promise<boolean> }
+  compat: {
+    verified: string
+    matches?(version: string): boolean
+    supports?(version: string): boolean
+    probe?(path: string): Promise<boolean>
+  }
   target(ctx: { profile: string; development: boolean }): string
   installMode: 'hooks' | 'plugin'
   pluginAsset?: string

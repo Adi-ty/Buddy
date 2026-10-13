@@ -216,13 +216,15 @@ export class IntegrationManager {
             if (!version) continue
             // The concrete contracts checked for this implementation. Other
             // versions remain detected but require verification before setup.
-            let capable = true
+            let capable = adapter.compat.supports?.(version) ?? true
             try {
-              capable = !adapter.compat.probe || (await adapter.compat.probe(candidate))
+              capable =
+                capable && (!adapter.compat.probe || (await adapter.compat.probe(candidate)))
             } catch {
               capable = false
             }
-            const compatible = version === adapter.compat.verified && capable
+            const compatible =
+              (adapter.compat.matches?.(version) ?? version === adapter.compat.verified) && capable
             detected = { path: candidate, version, compatible, capable }
             break
           } catch {
