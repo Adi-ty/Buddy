@@ -44,14 +44,18 @@ export default Plugin.define({
     const controller = new AbortController()
 
     const send = (type, properties = {}, eventId) => {
-      const info = properties.info ?? properties.session ?? properties
-      const sessionId = properties.sessionID ?? info.id
+      const info =
+        properties.info ??
+        properties.session ??
+        (['session.created', 'session.updated'].includes(type) ? properties : null)
+      const sessionId = properties.sessionID ?? info?.id
       if (typeof sessionId !== 'string') return
       if (info && typeof info === 'object') {
+        const previous = known.get(sessionId) ?? {}
         known.set(sessionId, {
-          cwd: info.directory ?? ctx.location.directory,
-          parentId: info.parentID,
-          title: info.title,
+          cwd: info.directory ?? previous.cwd ?? ctx.location.directory,
+          ...(typeof info.parentID === 'string' ? { parentId: info.parentID } : {}),
+          ...(typeof info.title === 'string' ? { title: info.title } : {}),
         })
       }
       if (!['session.created', 'session.updated', 'session.deleted'].includes(type))
@@ -352,7 +356,7 @@ export default Plugin.define({
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           if (disposed || !watched.has(event.type)) continue
-          const properties = event.properties ?? {}
+          const properties = event.properties ?? event.data ?? {}
           send(event.type, properties, event.id)
           if (['permission.asked', 'permission.v2.asked'].includes(event.type))
             publishRequest(properties, 'permission')

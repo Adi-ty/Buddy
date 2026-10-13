@@ -58,7 +58,14 @@ test('OpenCode V2 plugin subscribes to V2 events and cleans up its subscription'
   let closed = false
   const ctx = {
     location: { directory: '/projects/buddy' },
-    session: {},
+    session: {
+      active: async () => ({ 'session-1': { type: 'running' } }),
+      get: async ({ sessionID }) => ({
+        id: sessionID,
+        directory: '/projects/buddy',
+        title: 'Recovered session',
+      }),
+    },
     permission: {},
     event: {
       subscribe({ signal }) {
@@ -88,7 +95,7 @@ test('OpenCode V2 plugin subscribes to V2 events and cleans up its subscription'
   publish({
     id: 'event-1',
     type: 'session.status',
-    properties: { sessionID: 'session-1', status: { type: 'busy' } },
+    data: { sessionID: 'session-1', status: { type: 'busy' } },
   })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(observations[0].sessionId, 'session-1')
