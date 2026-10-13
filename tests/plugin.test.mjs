@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { build } from 'esbuild'
 
 async function loadPlugin() {
@@ -17,10 +20,6 @@ async function loadPlugin() {
             path: 'plugin-api',
             namespace: 'fixture',
           }))
-          builder.onResolve({ filter: /^@opencode\/client(?:\/service)?$/ }, (args) => ({
-            path: args.path.endsWith('/service') ? 'client-service' : 'client',
-            namespace: 'fixture',
-          }))
           builder.onResolve({ filter: /reporter\.mjs$/ }, () => ({
             path: 'reporter',
             namespace: 'fixture',
@@ -33,13 +32,9 @@ async function loadPlugin() {
             contents:
               args.path === 'plugin-api'
                 ? 'export const Plugin = { define: (definition) => definition }'
-                : args.path === 'client-service'
-                  ? 'export const Service = { discover: async () => ({ url: "http://localhost:4096" }), headers: () => ({}) }'
-                  : args.path === 'client'
-                    ? 'export const OpenCode = { make: () => ({ session: { form: { list: async () => globalThis.__buddyForms ?? [], get: async () => globalThis.__buddyForm ?? null, reply: async (input) => globalThis.__buddyFormReplies?.push(input) } } }) }'
-                    : args.path === 'reporter'
-                      ? 'export const report = (...args) => globalThis.__buddyPluginReport(...args)'
-                      : 'export const connectControls = (_path, _harness, callback) => globalThis.__buddyConnectControls(callback)',
+                : args.path === 'reporter'
+                  ? 'export const report = (...args) => globalThis.__buddyPluginReport(...args)'
+                  : 'export const connectControls = (_path, _harness, callback) => globalThis.__buddyConnectControls(callback)',
             loader: 'js',
           }))
         },
@@ -151,13 +146,32 @@ test('OpenCode V2 permission and form replies use their live session APIs', asyn
     state: { status: 'pending' },
   }
   const replies = []
-  globalThis.__buddyForms = [form]
-  globalThis.__buddyForm = form
-  globalThis.__buddyFormReplies = replies
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const stateHome = mkdtempSync(join(tmpdir(), 'buddy-opencode-service-'))
+  mkdirSync(join(stateHome, 'opencode'), { recursive: true })
+  writeFileSync(
+    join(stateHome, 'opencode', 'service.json'),
+    JSON.stringify({ url: 'http://127.0.0.1:1', password: 'test-password' }),
+  )
+  process.env.XDG_STATE_HOME = stateHome
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async (url, init = {}) => {
+    const path = String(url).replace('http://127.0.0.1:1', '')
+    if (path === '/api/session/session-1/form' && (!init.method || init.method === 'GET'))
+      return { ok: true, status: 200, json: async () => ({ data: [form] }) }
+    if (path === '/api/session/session-1/form/form-1' && (!init.method || init.method === 'GET'))
+      return { ok: true, status: 200, json: async () => ({ data: form }) }
+    if (path === '/api/session/session-1/form/form-1/reply' && init.method === 'POST') {
+      replies.push({ formID: 'form-1', answer: JSON.parse(String(init.body)).answer })
+      return { ok: true, status: 204, json: async () => null }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
   t.after(() => {
-    delete globalThis.__buddyForms
-    delete globalThis.__buddyForm
-    delete globalThis.__buddyFormReplies
+    globalThis.fetch = previousFetch
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(stateHome, { recursive: true, force: true })
   })
   const ctx = {
     location: { directory: '/projects/buddy' },

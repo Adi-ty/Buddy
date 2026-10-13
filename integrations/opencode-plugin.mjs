@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { OpenCode } from '@opencode/client'
-import { Service } from '@opencode/client/service'
 import { Plugin } from '@opencode/plugin'
 import { connectControls } from './control-client.mjs'
 import { report } from './reporter.mjs'
@@ -59,22 +59,57 @@ export default Plugin.define({
     const pendingReplies = new Set()
     const nativeRequests = new Set()
     const controller = new AbortController()
-    let apiClientPromise
+    let serviceCache
 
-    const apiClient = () => {
-      if (!apiClientPromise) {
-        apiClientPromise = Service.discover().then((endpoint) => {
-          if (!endpoint) throw new Error('OpenCode service is unavailable')
-          return OpenCode.make({
-            baseUrl: endpoint.url,
-            headers: {
-              ...Service.headers(endpoint),
-              'x-opencode-directory': encodeURIComponent(ctx.location.directory),
-            },
+    // OpenCode's plugin host provides @opencode/plugin only. Form APIs are
+    // reached over the local service HTTP API with stdlib fetch + fs so the
+    // plugin has no extra package dependencies to resolve.
+    const serviceEndpoint = async () => {
+      if (serviceCache) return serviceCache
+      const file = process.env.XDG_STATE_HOME
+        ? join(process.env.XDG_STATE_HOME, 'opencode', 'service.json')
+        : join(homedir(), '.local', 'state', 'opencode', 'service.json')
+      const info = JSON.parse(readFileSync(file, 'utf8'))
+      if (!info?.url || typeof info.url !== 'string')
+        throw new Error('OpenCode service is unavailable')
+      const headers =
+        typeof info.password === 'string' && info.password
+          ? {
+              authorization: 'Basic ' + Buffer.from(`opencode:${info.password}`).toString('base64'),
+            }
+          : {}
+      serviceCache = { url: info.url.replace(/\/$/, ''), headers }
+      return serviceCache
+    }
+
+    const apiJson = async (path, init) => {
+      const attempt = async (retried) => {
+        const endpoint = await serviceEndpoint()
+        let response
+        try {
+          response = await fetch(endpoint.url + path, {
+            ...init,
+            headers: { ...endpoint.headers, ...(init?.headers ?? {}) },
           })
-        })
+        } catch (error) {
+          if (!retried) {
+            serviceCache = undefined
+            return attempt(true)
+          }
+          throw error
+        }
+        if (response.status === 401 || response.status === 403) {
+          if (!retried) {
+            serviceCache = undefined
+            return attempt(true)
+          }
+          throw new Error(`OpenCode API ${response.status}`)
+        }
+        if (!response.ok) throw new Error(`OpenCode API ${response.status}`)
+        if (response.status === 204) return null
+        return response.json()
       }
-      return apiClientPromise
+      return attempt(false)
     }
 
     const send = (type, properties = {}, eventId) => {
@@ -156,9 +191,23 @@ export default Plugin.define({
       })
     }
 
-    const listForms = async (sessionID) => {
-      const client = await apiClient()
-      return valueOf(await client.session.form.list({ sessionID }))
+    const listForms = async (sessionID) =>
+      valueOf(await apiJson(`/api/session/${encodeURIComponent(sessionID)}/form`))
+    const getForm = async (sessionID, formID) =>
+      valueOf(
+        await apiJson(
+          `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}`,
+        ),
+      )
+    const replyForm = async (sessionID, formID, answer) => {
+      await apiJson(
+        `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ answer }),
+        },
+      )
     }
     const replyToRequest = async (message) => {
       const context = published.get(message.id)
@@ -191,10 +240,7 @@ export default Plugin.define({
           })
         } else {
           if (!Array.isArray(response.answers)) throw new Error('Invalid form answer')
-          const client = await apiClient()
-          const current = valueOf(
-            await client.session.form.get({ sessionID: context.sessionId, formID: context.formId }),
-          )
+          const current = await getForm(context.sessionId, context.formId)
           if (
             current?.id !== context.formId ||
             current.sessionID !== context.sessionId ||
@@ -229,11 +275,7 @@ export default Plugin.define({
               answer[field.key] = parsed
             } else answer[field.key] = selected[0] ?? ''
           }
-          await client.session.form.reply({
-            sessionID: context.sessionId,
-            formID: context.formId,
-            answer,
-          })
+          await replyForm(context.sessionId, context.formId, answer)
         }
         controls?.send({ op: 'result', id: message.id, ok: true })
         published.delete(message.id)
@@ -375,7 +417,6 @@ export default Plugin.define({
             if (!ids.has(id)) {
               controls?.send({ op: 'resolved', id })
               published.delete(id)
-              formClaims.delete(id)
               formClaims.delete(id)
             }
           for (const { request, kind, questions } of requests)
