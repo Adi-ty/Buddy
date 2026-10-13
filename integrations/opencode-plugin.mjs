@@ -17,6 +17,11 @@ const watched = new Set([
   'session.tool.progress',
   'session.tool.success',
   'session.tool.error',
+  'session.execution.started',
+  'session.execution.succeeded',
+  'session.execution.failed',
+  'session.execution.interrupted',
+  'session.retry.scheduled',
   'session.idle',
   'session.error',
   'permission.asked',
@@ -382,6 +387,8 @@ export default Plugin.define({
                 'session.tool.progress',
                 'session.tool.success',
                 'session.tool.error',
+                'session.execution.started',
+                'session.retry.scheduled',
               ].includes(event.type)
             )
               active.add(sessionId)
@@ -389,7 +396,15 @@ export default Plugin.define({
               const status = properties.status?.type ?? properties.status
               if (['busy', 'running', 'retry'].includes(status)) active.add(sessionId)
               else if (status === 'idle') active.delete(sessionId)
-            } else if (event.type === 'session.idle' || event.type === 'session.deleted')
+            } else if (
+              [
+                'session.idle',
+                'session.deleted',
+                'session.execution.succeeded',
+                'session.execution.failed',
+                'session.execution.interrupted',
+              ].includes(event.type)
+            )
               active.delete(sessionId)
           }
           send(event.type, properties, event.id)

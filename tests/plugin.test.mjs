@@ -102,11 +102,11 @@ test('OpenCode V2 plugin subscribes to V2 events and cleans up its subscription'
   assert.equal(observations[0].cwd, '/projects/buddy')
   publish({
     id: 'event-2',
-    type: 'session.idle',
+    type: 'session.execution.succeeded',
     data: { sessionID: 'session-1' },
   })
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(observations[1].event, 'session.idle')
+  assert.equal(observations[1].event, 'session.execution.succeeded')
   cleanup()
   wake()
   await new Promise((resolve) => setImmediate(resolve))
