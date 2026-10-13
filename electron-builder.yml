@@ -7,7 +7,6 @@ files:
   - out/**/*
   - '!out/native/**'
   - package.json
-  - '!**/*.md'
   - '!docs/**'
 extraResources:
   - from: out/native/buddy-display

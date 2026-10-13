@@ -95,6 +95,28 @@ const js = async (window, code) => {
     throw error
   }
 }
+async function rejectsCompanionMove(window, action) {
+  const message = 'Invalid companion movement request'
+  const logError = console.error
+  // Electron logs rejected invokes even when the rejection is expected by a test.
+  console.error = (...args) => {
+    if (
+      args[0] === "Error occurred in handler for 'buddy:move-companion':" &&
+      args[1] instanceof Error &&
+      args[1].message === message
+    )
+      return
+    logError(...args)
+  }
+  try {
+    await assert.rejects(
+      window.webContents.executeJavaScript(`window.buddy.moveCompanion(${JSON.stringify(action)})`),
+      /Error invoking remote method 'buddy:move-companion': Error: Invalid companion movement request/,
+    )
+  } finally {
+    console.error = logError
+  }
+}
 const snapshot = (window) => js(window, 'window.buddy.getSnapshot()')
 const click = (window, text) =>
   js(
@@ -214,14 +236,8 @@ async function verify() {
   assert(bounds.y + bounds.height <= display.workArea.y + display.workArea.height)
   const compact = overlay.getBounds()
   assert(await js(overlay, '!!document.querySelector("button.companion-handle")'))
-  await assert.rejects(
-    js(dashboard, "window.buddy.moveCompanion('start')"),
-    /Invalid companion movement/,
-  )
-  await assert.rejects(
-    js(overlay, "window.buddy.moveCompanion('teleport')"),
-    /Invalid companion movement/,
-  )
+  await rejectsCompanionMove(dashboard, 'start')
+  await rejectsCompanionMove(overlay, 'teleport')
   pointer = { x: compact.x + 20, y: compact.y + 20 }
   await js(overlay, "window.buddy.moveCompanion('start')")
   pointer = { x: compact.x - 80, y: compact.y - 80 }
