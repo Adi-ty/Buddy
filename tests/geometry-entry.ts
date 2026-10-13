@@ -1,6 +1,7 @@
+export { parseNativeDisplays, matchDisplays, safeActualBounds } from '../src/main/display-geometry'
+
 export {
-  parseNativeDisplays,
-  matchDisplays,
-  shelfBounds,
-  safeActualBounds,
-} from '../src/main/display-geometry'
+  companionBounds,
+  companionPosition,
+  companionDisplay,
+} from '../src/main/companion-placement'

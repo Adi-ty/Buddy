@@ -6,7 +6,7 @@ import { loadSource } from './load-source.mjs'
 const {
   IntegrationsPage,
   SessionRow,
-  NotchSettings,
+  SettingsPage,
   SessionList,
   setSessionFilters,
   OverlaySessions,
@@ -195,30 +195,12 @@ test('session name is primary and subtitle identifies the harness without repeat
   assert(!html.includes('Codex · buddy'))
 })
 
-test('display controls reflect actual choices instead of duplicating the only connected display', () => {
-  const display = { id: 1, name: 'Built-in Retina Display', builtIn: true, camera: {} }
-  const overlay = {
-    displays: [display],
-    anchorId: 1,
-    displayId: null,
-    visible: true,
-    geometry: 'ready',
-  }
-  let html = renderToStaticMarkup(createElement(NotchSettings, { snapshot: { overlay } }))
-  assert(html.includes('Only connected display'))
-  assert(!html.includes('Notch display'))
-  html = renderToStaticMarkup(
-    createElement(NotchSettings, {
-      snapshot: { overlay: { ...overlay, displays: [display, { id: 2, name: 'Studio Display' }] } },
-    }),
-  )
-  assert(html.includes('Notch display'))
-  assert(html.includes('Automatic placement'))
-  assert(html.includes('Studio Display'))
-  html = renderToStaticMarkup(
-    createElement(NotchSettings, { snapshot: { overlay: { ...overlay, displayId: 1 } } }),
-  )
-  assert(html.includes('Use automatic placement'))
+test('settings contains app preferences without display placement controls', () => {
+  const html = renderToStaticMarkup(createElement(SettingsPage, { snapshot }))
+  assert(html.includes('Desktop notifications'))
+  assert(html.includes('Launch at login'))
+  assert(!html.includes('placement'))
+  assert(!html.includes('<select'))
 })
 
 test('unverified installs are explicit and missing preview metadata does not crash integrations', () => {
@@ -348,7 +330,7 @@ test('a parent family is one dashboard entry, with child details and an honest a
   assert(html.includes('Includes subagent activity'))
 })
 
-test('notch shows parent titles and harness labels, and counts families rather than individual agents', () => {
+test('companion shows parent titles and harness labels, and counts families rather than individual agents', () => {
   const parent = {
     id: 'opencode:root',
     harness: 'opencode',
@@ -383,6 +365,9 @@ test('notch shows parent titles and harness labels, and counts families rather t
   assert(html.includes('OpenCode ·'))
   assert(html.includes('1 waiting for you'))
   assert(html.includes('Expand 1 sessions, 1 need attention'))
+  assert(html.includes('aria-label="Move companion"'))
+  assert(html.includes('title="Show sessions"'))
+  assert(html.includes('companion-handle'))
   assert(!html.includes('Audit the count'))
   const expanded = renderToStaticMarkup(
     createElement(OverlaySessions, { snapshot: { ...current, overlay: { expanded: true } } }),
@@ -473,9 +458,9 @@ test('a settled failed subagent has a quiet parent badge and its own error detai
     !html.match(/<div[^>]*class="[^"]*session-card[^"]*"[^>]*>/)[0].includes('data-signal="error"'),
     'Parent row stays neutral',
   )
-  const notch = renderToStaticMarkup(createElement(OverlaySessions, { snapshot: current }))
-  assert(notch.includes('1 working'))
-  assert(!notch.includes('data-signal="error"'))
+  const companion = renderToStaticMarkup(createElement(OverlaySessions, { snapshot: current }))
+  assert(companion.includes('1 working'))
+  assert(!companion.includes('data-signal="error"'))
 })
 
 test('opening a family selects its pending request owner across all harnesses and ignores ended descendants', () => {

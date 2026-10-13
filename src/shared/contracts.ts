@@ -1,3 +1,4 @@
+import type { CompanionMove } from './companion'
 export const DASHBOARD_ROUTES = ['/sessions', '/history', '/integrations', '/settings'] as const
 export type DashboardRoute = (typeof DASHBOARD_ROUTES)[number]
 export const SESSION_ACTIONS = ['reveal', 'copyPath', 'copyId'] as const
@@ -55,11 +56,7 @@ export interface OverlayDisplay {
   auxiliaryRight: Rect | null
 }
 
-export interface OverlayOptions {
-  displayId: number | null
-}
-
-export interface OverlayState extends OverlayOptions {
+export interface OverlayState {
   geometry: 'loading' | 'ready' | 'unavailable' | 'suspended'
   message: string | null
   displays: readonly OverlayDisplay[]
@@ -142,8 +139,8 @@ export interface BuddyAPI {
   getSnapshot(): Promise<BuddySnapshot>
   onSnapshot(listener: (snapshot: BuddySnapshot) => void): () => void
   onNavigate(listener: (route: DashboardRoute) => void): () => void
-  setOverlayOptions(options: OverlayOptions): Promise<void>
-  refreshDisplays(): Promise<void>
+  moveCompanion(action: CompanionMove): Promise<void>
+  resetCompanionPosition(): Promise<void>
   setOverlayExpanded(expanded: boolean): Promise<void>
   openDashboard(): Promise<void>
   installIntegration(harness: HarnessId, allowUnverified?: boolean): Promise<void>
@@ -190,8 +187,8 @@ export const IPC = {
   navigate: 'buddy:navigate',
   navigationReady: 'buddy:navigation-ready',
   updated: 'buddy:snapshot-updated',
-  overlayOptions: 'buddy:overlay-options',
-  refreshDisplays: 'buddy:refresh-displays',
+  moveCompanion: 'buddy:move-companion',
+  resetCompanionPosition: 'buddy:reset-companion-position',
   overlayExpanded: 'buddy:overlay-expanded',
   openDashboard: 'buddy:open-dashboard',
   installIntegration: 'buddy:install-integration',

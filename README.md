@@ -6,7 +6,7 @@
 
 <p align="center"><b>Your coding agents, at a glance.</b></p>
 
-<p align="center">A quiet macOS companion for your coding agents. Follow live sessions near your MacBook notch and see which agent needs you.</p>
+<p align="center">A quiet macOS companion for your coding agents. Keep live sessions in a movable companion and see which agent needs you.</p>
 
 ## Develop
 

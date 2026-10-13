@@ -11,6 +11,20 @@ screen.getAllDisplays = () => [
     rotation: 0,
   },
 ]
+screen.getDisplayMatching = (bounds) => {
+  const area = (display) =>
+    Math.max(
+      0,
+      Math.min(bounds.x + bounds.width, display.bounds.x + display.bounds.width) -
+        Math.max(bounds.x, display.bounds.x),
+    ) *
+    Math.max(
+      0,
+      Math.min(bounds.y + bounds.height, display.bounds.y + display.bounds.height) -
+        Math.max(bounds.y, display.bounds.y),
+    )
+  return screen.getAllDisplays().toSorted((a, b) => area(b) - area(a))[0]
+}
 screen.cursor = { x: 0, y: 0 }
 screen.getCursorScreenPoint = () => screen.cursor
 export const globalShortcut = { register: () => true, unregister() {} }

@@ -1,9 +1,10 @@
+import { CompanionHandle } from './companion-handle'
 import { harnessFor } from '@/lib/harness'
 import { useEffect, useState } from 'react'
 import { ArrowUpRight, ChevronDown, ChevronUp } from 'lucide-react'
 import {
-  notchRecords,
-  notchSignal,
+  companionRecords,
+  companionSignal,
   sessionNotification,
   signalRevision,
   sessionLastTool,
@@ -30,7 +31,7 @@ export function OverlayView() {
   }, [])
   return failed ? (
     <div className="overlay-surface p-3 text-xs" role="alert">
-      The notch couldn’t reconnect. Open Buddy from its menu to retry.
+      The companion couldn’t reconnect. Open Buddy from its menu to retry.
     </div>
   ) : snapshot ? (
     <OverlaySessions snapshot={snapshot} />
@@ -39,7 +40,7 @@ export function OverlayView() {
 
 export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
   const now = useSessionClock(snapshot.sessions, snapshot.overlay.expanded)
-  const { notice, setNotice } = useNotice()
+  const { notice, setNotice, reportError } = useNotice()
   const [selection, setSelection] = useState<{
     familyId: string
     sessionId: string | null
@@ -58,7 +59,7 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
         void window.buddy.setOverlayExpanded(false).catch(() =>
           setNotice({
             error: true,
-            text: 'Couldn’t collapse the notch. Try its collapse button.',
+            text: 'Couldn’t collapse the companion. Try its collapse button.',
           }),
         )
       }
@@ -67,7 +68,7 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
     return () => window.removeEventListener('keydown', escape)
   }, [selection, setNotice])
   const families = sessionFamilies(
-    notchRecords(
+    companionRecords(
       snapshot.sessions,
       now,
       [...snapshot.sessions, ...snapshot.history],
@@ -80,7 +81,7 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
   const subagents = snapshot.sessions.filter((session) => session.parentId).length
   if (!sessions.length) return null
   const attention = sessions.filter((session) => session.status === 'needs-attention')
-  const signal = notchSignal(sessions, now)
+  const signal = companionSignal(sessions, now)
   const finished = sessions.filter(
     (session) => sessionNotification(session, now) === 'success',
   ).length
@@ -121,14 +122,19 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
       </span>
       {expanded ? (
         <>
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
-            <div>
-              <h1 className="text-sm font-semibold">
-                {sessions.length} {sessions.length === 1 ? 'session' : 'sessions'}
-                {subagents > 0 && ` · ${subagents} ${subagents === 1 ? 'subagent' : 'subagents'}`}
-              </h1>
-              <p className={cn('mt-0.5 text-[11px]', signalColor)}>{summary}</p>
-            </div>
+          <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
+            <CompanionHandle
+              className="flex-1"
+              onError={(error) => reportError(error, 'Couldn’t move the companion. Try again.')}
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold">
+                  {sessions.length} {sessions.length === 1 ? 'session' : 'sessions'}
+                  {subagents > 0 && ` · ${subagents} ${subagents === 1 ? 'subagent' : 'subagents'}`}
+                </span>
+                <span className={cn('mt-0.5 block text-[11px]', signalColor)}>{summary}</span>
+              </span>
+            </CompanionHandle>
             <Button
               variant="ghost"
               size="icon"
@@ -212,56 +218,66 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
           </footer>
         </>
       ) : (
-        <button
-          className="overlay-compact"
-          onClick={() => invoke(window.buddy.setOverlayExpanded(true))}
-          aria-label={`Expand ${sessions.length} sessions${attention.length ? `, ${attention.length} need attention` : ''}`}
-          aria-expanded={false}
-        >
-          <span className="flex items-center -space-x-1.5">
-            {sessions.slice(0, 5).map((session) => (
+        <div className="overlay-compact">
+          <CompanionHandle
+            className="min-w-0 flex-1"
+            onError={(error) => reportError(error, 'Couldn’t move the companion. Try again.')}
+          >
+            <span className="flex shrink-0 items-center -space-x-1.5">
+              {sessions.slice(0, 2).map((session) => (
+                <span
+                  key={session.id}
+                  className="relative rounded-lg bg-background ring-2 ring-background"
+                  title={session.name}
+                  role="img"
+                  aria-label={`${session.name} · ${session.project}`}
+                >
+                  <SessionAvatar
+                    avatar={session}
+                    harness={harnessFor(snapshot, session.harness)}
+                    className="size-8"
+                    compactBadge
+                  />
+                  {sessionNotification(session, now) && (
+                    <span
+                      className={`avatar-signal avatar-signal-${sessionNotification(session, now)}`}
+                      aria-hidden="true"
+                    >
+                      {session.status === 'completed' ? '✓' : '!'}
+                    </span>
+                  )}
+                </span>
+              ))}
+              {sessions.length > 2 && (
+                <span className="pl-3 text-xs text-muted-foreground">+{sessions.length - 2}</span>
+              )}
+            </span>
+            <span className="min-w-0 flex-1 text-left text-[11px]">
               <span
-                key={session.id}
-                className="relative rounded-lg bg-background ring-2 ring-background"
-                title={session.name}
-                role="img"
-                aria-label={`${session.name} · ${session.project}`}
+                className={cn('block truncate font-medium', signalColor)}
+                title={families[0]!.root.name}
               >
-                <SessionAvatar
-                  avatar={session}
-                  harness={harnessFor(snapshot, session.harness)}
-                  className="size-8"
-                  compactBadge
-                />
-                {sessionNotification(session, now) && (
-                  <span
-                    className={`avatar-signal avatar-signal-${sessionNotification(session, now)}`}
-                    aria-hidden="true"
-                  >
-                    {session.status === 'completed' ? '✓' : '!'}
-                  </span>
-                )}
+                {families[0]!.root.name}
               </span>
-            ))}
-            {sessions.length > 5 && (
-              <span className="pl-3 text-xs text-muted-foreground">+{sessions.length - 5}</span>
-            )}
-          </span>
-          <span className="ml-auto min-w-0 text-right text-[11px]">
-            <span
-              className={cn('block truncate font-medium', signalColor)}
-              title={families[0]!.root.name}
-            >
-              {families[0]!.root.name}
+              <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                {harnessFor(snapshot, families[0]!.root.harness).name} ·{' '}
+                {sessions.length > 1 ? `${sessions.length} sessions · ` : ''}
+                {summary}
+              </span>
             </span>
-            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-              {harnessFor(snapshot, families[0]!.root.harness).name} ·{' '}
-              {sessions.length > 1 ? `${sessions.length} sessions · ` : ''}
-              {summary}
-            </span>
-          </span>
-          <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
-        </button>
+          </CompanionHandle>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0"
+            onClick={() => invoke(window.buddy.setOverlayExpanded(true))}
+            aria-label={`Expand ${sessions.length} sessions${attention.length ? `, ${attention.length} need attention` : ''}`}
+            aria-expanded={false}
+            title="Show sessions"
+          >
+            <ChevronDown size={14} />
+          </Button>
+        </div>
       )}
     </SignalBoundary>
   )

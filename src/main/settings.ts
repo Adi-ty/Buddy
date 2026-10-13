@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { HARNESS_IDS, type HarnessId } from '../shared/harnesses'
+import { isCompanionPosition, type CompanionPosition } from '../shared/companion'
 import { isCliVersion } from './versions'
 
 export class ProfileSettings {
@@ -18,6 +19,16 @@ export class ProfileSettings {
       this.damaged = true
       console.error('Buddy settings are unreadable; using defaults and preserving the file')
     }
+  }
+  get companionPosition(): CompanionPosition | null {
+    return isCompanionPosition(this.data.companionPosition)
+      ? { ...this.data.companionPosition }
+      : null
+  }
+  setCompanionPosition(position: CompanionPosition | null): void {
+    if (position !== null && !isCompanionPosition(position))
+      throw new Error('Invalid companion position')
+    this.write({ ...this.data, companionPosition: position })
   }
   get desktopNotifications(): boolean {
     return this.data.desktopNotifications !== false

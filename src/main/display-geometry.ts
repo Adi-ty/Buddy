@@ -102,7 +102,7 @@ export function matchDisplays(native: NativeDisplay[], electron: Display[]): Ove
   return native.flatMap((display) => {
     const matched = electron.find((candidate) => candidate.id === display.id)
     // Rotation and unexpected coordinate ratios are unverified. Never infer a
-    // notch from a process, model name, resolution, or backing pixel multiplier.
+    // camera region from a process, model name, resolution, or backing pixel multiplier.
     if (
       !matched ||
       matched.rotation !== 0 ||
@@ -149,27 +149,6 @@ export function matchDisplays(native: NativeDisplay[], electron: Display[]): Ove
       },
     ]
   })
-}
-
-export function shelfBounds(display: OverlayDisplay, expanded: boolean): Rect | null {
-  const width = Math.min(expanded ? 440 : 320, display.workArea.width - 24)
-  const height = expanded ? 440 : 60
-  const y = Math.ceil(Math.max(display.bounds.y + display.safeTop, display.workArea.y) + 6)
-  if (width < 280 || y + height > display.workArea.y + display.workArea.height - 6) return null
-  const center = display.camera
-    ? display.camera.x + display.camera.width / 2
-    : display.bounds.x + display.bounds.width / 2
-  return {
-    x: Math.round(
-      Math.max(
-        display.workArea.x + 12,
-        Math.min(center - width / 2, display.workArea.x + display.workArea.width - width - 12),
-      ),
-    ),
-    y,
-    width: Math.floor(width),
-    height,
-  }
 }
 
 export function safeActualBounds(display: OverlayDisplay, actual: Rect): boolean {

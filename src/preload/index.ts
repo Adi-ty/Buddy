@@ -12,8 +12,8 @@ const api: BuddyAPI = {
     ipcRenderer.on(IPC.updated, handle)
     return () => ipcRenderer.removeListener(IPC.updated, handle)
   },
-  setOverlayOptions: (options) => ipcRenderer.invoke(IPC.overlayOptions, options),
-  refreshDisplays: () => ipcRenderer.invoke(IPC.refreshDisplays),
+  moveCompanion: (action) => ipcRenderer.invoke(IPC.moveCompanion, action),
+  resetCompanionPosition: () => ipcRenderer.invoke(IPC.resetCompanionPosition),
   setOverlayExpanded: (expanded) => ipcRenderer.invoke(IPC.overlayExpanded, expanded),
   openDashboard: () => ipcRenderer.invoke(IPC.openDashboard),
   installIntegration: (harness, allowUnverified = false) =>

@@ -121,10 +121,10 @@ const rowText = (window) =>
 const expand = async (window) => {
   const bounds = window.getBounds()
   pointer = { x: bounds.x + 20, y: bounds.y + 20 }
-  await js(window, 'document.querySelector(".overlay-compact")?.click()')
+  await js(window, 'document.querySelector(".overlay-compact button[aria-expanded]")?.click()')
   await until(
     () => js(window, 'document.querySelectorAll(".session-row").length > 0'),
-    'expanded notch rows',
+    'expanded companion rows',
   )
 }
 const overlayDetailsVisible = (window, id) =>
@@ -192,7 +192,10 @@ async function verify() {
   }
   for (let i = 0; i < 8; i++) await send('SessionStart', `test-session-${i}`)
   await until(async () => (await snapshot(dashboard)).sessions.length === 8, 'eight hook sessions')
-  await until(async () => (await snapshot(dashboard)).overlay.visible, 'native notch visibility')
+  await until(
+    async () => (await snapshot(dashboard)).overlay.visible,
+    'native companion visibility',
+  )
   const overlay = windows.find((window) => window.webContents.getURL().endsWith('#overlay'))
   assert(overlay)
   assert.equal(overlay.isFocusable(), false)
@@ -209,6 +212,33 @@ async function verify() {
       bounds.x + bounds.width <= display.workArea.x + display.workArea.width,
   )
   assert(bounds.y + bounds.height <= display.workArea.y + display.workArea.height)
+  const compact = overlay.getBounds()
+  assert(await js(overlay, '!!document.querySelector("button.companion-handle")'))
+  await assert.rejects(
+    js(dashboard, "window.buddy.moveCompanion('start')"),
+    /Invalid companion movement/,
+  )
+  await assert.rejects(
+    js(overlay, "window.buddy.moveCompanion('teleport')"),
+    /Invalid companion movement/,
+  )
+  pointer = { x: compact.x + 20, y: compact.y + 20 }
+  await js(overlay, "window.buddy.moveCompanion('start')")
+  pointer = { x: compact.x - 80, y: compact.y - 80 }
+  await js(overlay, "window.buddy.moveCompanion('finish')")
+  const moved = overlay.getBounds()
+  assert.equal(moved.x, compact.x - 100)
+  assert.equal(moved.y, compact.y - 100)
+  assert.equal(overlay.isFocusable(), false, 'Dragging leaves the agent window focused')
+  assert(JSON.parse(readFileSync(join(profile, 'settings.json'), 'utf8')).companionPosition)
+  await expand(overlay)
+  const enlarged = overlay.getBounds()
+  assert(enlarged.x >= display.workArea.x && enlarged.y >= display.workArea.y)
+  assert(enlarged.x + enlarged.width <= display.workArea.x + display.workArea.width)
+  assert(enlarged.y + enlarged.height <= display.workArea.y + display.workArea.height)
+  await js(overlay, `document.querySelector('button[aria-label="Collapse sessions"]').click()`)
+  await until(async () => !(await snapshot(dashboard)).overlay.expanded, 'collapse after moving')
+  assert.deepEqual(overlay.getBounds(), moved, 'Collapse restores the compact position')
   await send('PermissionRequest', 'test-session-7', { tool: 'Bash' })
   await until(
     () => js(overlay, 'document.querySelector(".overlay-surface")?.dataset.signal === "attention"'),
@@ -222,12 +252,12 @@ async function verify() {
   await send('PermissionRequest', 'test-session-7', { requestId: 'request-1', tool: 'Bash' })
   await until(
     () => js(overlay, 'document.querySelector(".overlay-surface")?.dataset.signal === "attention"'),
-    'yellow notch signal',
+    'yellow companion signal',
   )
   await expand(overlay)
   await until(
     () => js(overlay, 'document.querySelectorAll(".session-row").length === 8'),
-    'all sessions in expanded notch',
+    'all sessions in expanded companion',
   )
   assert(
     (await js(overlay, 'document.querySelector(".session-row").textContent')).includes(
@@ -237,14 +267,14 @@ async function verify() {
   )
   assert(
     (await rowText(overlay)).every((text) => /Codex task \d/.test(text)),
-    'Notch uses harness titles, not the project name',
+    'Companion uses harness titles, not the project name',
   )
   assert(
     await js(
       overlay,
       `[...document.querySelectorAll('.session-row')].every(row => row.getAttribute('aria-expanded') === 'false' && !row.hasAttribute('aria-pressed'))`,
     ),
-    'Closed notch rows expose disclosure state rather than selection state',
+    'Closed companion rows expose disclosure state rather than selection state',
   )
   await openOverlayRow(overlay, 'codex:test-session-7')
   assert.equal(
@@ -254,11 +284,11 @@ async function verify() {
   pointer = { x: -10000, y: -10000 }
   await until(
     async () => !(await snapshot(dashboard)).overlay.expanded,
-    'Leaving the notch collapses it',
+    'Leaving the companion collapses it',
   )
   await until(
     async () => !(await overlayDetailsVisible(overlay, 'codex:test-session-7')),
-    'Collapsed notch unmounts session details',
+    'Collapsed companion unmounts session details',
   )
   await expand(overlay)
   await openOverlayRow(overlay, 'codex:test-session-7')
@@ -308,7 +338,7 @@ async function verify() {
   await expand(overlay)
   await until(
     async () => (await rowText(overlay)).some((text) => text.includes('Fix login redirects')),
-    'OpenCode title also reaches notch',
+    'OpenCode title also reaches companion',
   )
   await report(join(profile, 'bridge.json'), {
     harness: 'opencode',
@@ -404,10 +434,6 @@ async function verify() {
     () => js(dashboard, 'document.querySelector("h1").textContent === "Settings"'),
     'settings page',
   )
-  await js(
-    dashboard,
-    '[...document.querySelectorAll("summary")].find(item => item.textContent.includes("Notch placement")).click()',
-  )
   await js(dashboard, `document.querySelector('input[type=checkbox]').click()`)
   await until(
     async () => (await snapshot(dashboard)).preferences.desktopNotifications === true,
@@ -422,27 +448,7 @@ async function verify() {
     await js(dashboard, `document.querySelectorAll('input[type=checkbox]')[1].disabled`),
     'Login preference explains unavailable development support',
   )
-  const displays = (await snapshot(dashboard)).overlay.displays
-  if (displays.length > 1) {
-    await select(dashboard, 'Notch display', String(displays[0].id))
-    await until(
-      async () => (await snapshot(dashboard)).overlay.displayId === displays[0].id,
-      'choose notch display',
-    )
-    await select(dashboard, 'Notch display', 'auto')
-    await until(
-      async () => (await snapshot(dashboard)).overlay.displayId === null,
-      'automatic notch display',
-    )
-  } else {
-    assert.equal(
-      await js(dashboard, 'document.querySelector(\'[aria-label="Notch display"]\') === null'),
-      true,
-      'Single display has no redundant picker',
-    )
-    assert(await js(dashboard, 'document.body.textContent.includes("Only connected display")'))
-  }
-  await js(dashboard, 'window.buddy.refreshDisplays()')
+  await js(dashboard, 'window.buddy.resetCompanionPosition()')
   await until(
     async () => (await snapshot(dashboard)).overlay.geometry === 'ready',
     'refresh placement',
@@ -579,12 +585,12 @@ async function verify() {
           overlay,
           'document.querySelector(".request-details")?.textContent.includes("echo smoke fixture")',
         ),
-      'full command inside notch card',
+      'full command inside companion card',
     )
     assert.equal(
       overlay.isFocusable(),
       false,
-      'Approval arrival and selection do not activate the notch',
+      'Approval arrival and selection do not activate the companion',
     )
     const beforeUnlock = (await snapshot(dashboard)).sessions.map((session) => [
       session.id,
@@ -628,7 +634,7 @@ async function verify() {
     if (nativeSource) {
       await until(
         () => nativeSource.decisions.some((p) => p.id === permissionId),
-        'notch approval sent to native Codex',
+        'companion approval sent to native Codex',
       )
       assert.deepEqual(nativeSource.decisions.find((p) => p.id === permissionId).result, {
         decision: 'accept',
@@ -638,10 +644,13 @@ async function verify() {
           nativeClient.messages.some(
             (p) => p.method === 'serverRequest/resolved' && p.params.requestId === permissionId,
           ),
-        'native Codex prompt clears after notch approval',
+        'native Codex prompt clears after companion approval',
       )
     } else {
-      await until(() => replies.some((p) => p.id === permissionId), 'notch approval sent to source')
+      await until(
+        () => replies.some((p) => p.id === permissionId),
+        'companion approval sent to source',
+      )
       assert.deepEqual(replies.find((p) => p.id === permissionId).response, { decision: 'allow' })
     }
     await until(
@@ -691,7 +700,7 @@ async function verify() {
       await expand(overlay)
       await until(
         () => js(overlay, 'document.querySelectorAll(".question-option").length === 3'),
-        'structured questions in notch',
+        'structured questions in companion',
       )
       assert.equal(
         await js(
@@ -755,7 +764,7 @@ async function verify() {
             overlay,
             'document.querySelector("fieldset")?.textContent.includes("Continue the native Codex task?")',
           ),
-        'native Codex question inside notch',
+        'native Codex question inside companion',
       )
       await js(overlay, 'document.querySelector("fieldset input[type=radio]").click()')
       await click(overlay, 'Send answers')
@@ -783,7 +792,7 @@ async function verify() {
         async () =>
           !(await snapshot(dashboard)).requests?.length &&
           (await js(overlay, 'document.querySelector(".request-panel") === null')),
-        'answer in native Codex clears the notch and dashboard',
+        'answer in native Codex clears the companion and dashboard',
       )
     }
     channel?.close()
@@ -857,10 +866,13 @@ async function verify() {
   await click(overlay, 'Dashboard')
   await until(
     () => js(dashboard, 'document.querySelector("h1")?.textContent === "Sessions"'),
-    'dashboard button from notch',
+    'dashboard button from companion',
   )
   await js(overlay, `document.querySelector('button[aria-label="Collapse sessions"]').click()`)
-  await until(async () => !(await snapshot(dashboard)).overlay.expanded, 'collapse notch button')
+  await until(
+    async () => !(await snapshot(dashboard)).overlay.expanded,
+    'collapse companion button',
+  )
   pointer = { x: -10000, y: -10000 }
   await js(dashboard, `document.querySelector('a[href="/history"]').click()`)
   await until(
@@ -886,7 +898,7 @@ async function verify() {
     event: 'session.deleted',
     sessionId: 'late-completion',
   })
-  await until(async () => !(await snapshot(dashboard)).overlay.visible, 'empty notch hidden')
+  await until(async () => !(await snapshot(dashboard)).overlay.visible, 'empty companion hidden')
   await until(async () => (await snapshot(dashboard)).history.length === 15, 'history populated')
   await select(dashboard, 'Filter by agent', 'codex')
   await until(
@@ -932,7 +944,7 @@ async function verify() {
   )
   await until(
     async () => !(await snapshot(dashboard)).overlay.visible,
-    'finished-only notch hides without a closing event',
+    'finished-only companion hides without a closing event',
   )
   assert.equal(
     (await snapshot(dashboard)).sessions[0].status,
@@ -1033,7 +1045,7 @@ async function verify() {
         (await snapshot(dashboard)).requests?.some(
           (request) => request.sessionId === `opencode:${owner}`,
         ),
-      'actual plugin question reaches the notch snapshot',
+      'actual plugin question reaches the companion snapshot',
     )
     await expand(overlay)
     await openOverlayRow(overlay, 'opencode:family-root')
@@ -1071,7 +1083,7 @@ async function verify() {
     await click(overlay, 'Send answers')
     await until(
       () => familyAnswers.some((request) => request.url === `/question/${requestId}/reply`),
-      'notch answer reaches the plugin’s exact pending question',
+      'companion answer reaches the plugin’s exact pending question',
     )
     assert.deepEqual(
       familyAnswers.find((request) => request.url === `/question/${requestId}/reply`).body,
@@ -1146,7 +1158,7 @@ async function verify() {
   await js(dashboard, 'window.buddy.removeIntegration("opencode")')
   assert.deepEqual(errors, [])
   console.log(
-    'PASS: native notch titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested-child questions above collapsed subagents; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-notch hiding',
+    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested-child questions above collapsed subagents; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
   )
   // A final deferred write must survive normal Electron quit.
   await send('SessionStart', 'quit-flush')

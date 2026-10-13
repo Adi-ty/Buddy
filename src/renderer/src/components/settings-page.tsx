@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import type { BuddySnapshot } from '@shared/contracts'
-import { NotchSettings } from './notch-settings'
 import { PageHeading } from './ui/page-heading'
 import { Notice } from './ui/notice'
 import { useNotice } from '@/lib/use-notice'
@@ -61,7 +60,6 @@ export function SettingsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         </label>
         <Notice message={notice} />
       </section>
-      <NotchSettings snapshot={snapshot} />
     </>
   )
 }

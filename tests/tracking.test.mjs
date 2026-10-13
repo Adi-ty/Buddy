@@ -12,13 +12,13 @@ const {
   normalizeObservation,
   prioritizeSessions,
   IntegrationManager,
-  notchSignal,
+  companionSignal,
   sessionNotification,
   COMPLETION_NOTICE_MS,
   sessionFamilies,
   relativeTime,
   TitleStorage,
-  notchRecords,
+  companionRecords,
   observeWake,
 } = await loadSource('tests/tracking-entry.ts')
 const event = (name, sessionId, extra = {}) =>
@@ -67,13 +67,13 @@ test('old failed subagents remain inspectable without keeping a later family tur
     records = store.snapshot().sessions.filter((item) => item.harness === harness)
     assert.equal(sessionFamilies(records)[0].summary.status, 'working')
     assert.equal(sessionFamilies(records)[0].descendants[0].status, 'error')
-    assert.equal(notchRecords(records).length, 1)
+    assert.equal(companionRecords(records).length, 1)
     // Ordinary tool events/heartbeats must not advance the turn boundary.
     emit(harness === 'opencode' ? 'buddy.reconcile' : 'PreToolUse', 'parent', { status: 'busy' })
     assert.equal(store.get(`${harness}:parent`).turnStartedAt, begun)
     stop('parent')
     records = store.snapshot().sessions.filter((item) => item.harness === harness)
-    assert.equal(notchRecords(records, at + COMPLETION_NOTICE_MS + 1).length, 0)
+    assert.equal(companionRecords(records, at + COMPLETION_NOTICE_MS + 1).length, 0)
     // A fresh failed child still surfaces in this turn.
     start('parent')
     start('child')
@@ -123,7 +123,7 @@ test('settled failed children do not keep a continuing parent red and pending ch
     assert.equal(failed.status, 'error', 'A stop signal must not turn a known failure into success')
     assert.equal(failed.turnActive, false)
     assert.equal(sessionFamilies(rows())[0].summary.status, 'working')
-    assert.equal(notchRecords(rows()).length, 1)
+    assert.equal(companionRecords(rows()).length, 1)
     emit(harness === 'opencode' ? 'session.status' : 'PreToolUse', 'parent', { status: 'busy' })
     assert.equal(
       store.get(`${harness}:parent`).turnStartedAt,
@@ -132,14 +132,14 @@ test('settled failed children do not keep a continuing parent red and pending ch
     )
     emit(harness === 'opencode' ? 'session.idle' : 'Stop', 'parent')
     assert.equal(sessionFamilies(rows())[0].summary.status, 'completed')
-    assert.equal(notchRecords(rows(), at + COMPLETION_NOTICE_MS + 1).length, 0)
+    assert.equal(companionRecords(rows(), at + COMPLETION_NOTICE_MS + 1).length, 0)
     // Even an older, idle child must become actionable when a new request arrives.
     if (harness === 'opencode') emit('question.asked', 'child', { requestId: 'answer' })
     else if (harness === 'claude-code')
       emit('PermissionRequest', 'parent', { agentId: 'child', requestId: 'answer' })
     else emit('PermissionRequest', 'child', { requestId: 'answer' })
     assert.equal(sessionFamilies(rows())[0].summary.status, 'needs-attention')
-    assert.equal(notchRecords(rows(), at + COMPLETION_NOTICE_MS + 1)[0].id, `${harness}:child`)
+    assert.equal(companionRecords(rows(), at + COMPLETION_NOTICE_MS + 1)[0].id, `${harness}:child`)
   }
 })
 
@@ -165,7 +165,7 @@ test('OpenCode busy/retry recovers an error and repeated idle reconciliation doe
   for (let i = 0; i < 3; i++) emit('buddy.reconcile', 'idle')
   assert.equal(store.get('opencode:opencode').statusChangedAt, completedAt)
   assert.equal(
-    notchRecords(store.snapshot().sessions, completedAt + COMPLETION_NOTICE_MS + 1).length,
+    companionRecords(store.snapshot().sessions, completedAt + COMPLETION_NOTICE_MS + 1).length,
     0,
   )
 })
@@ -484,7 +484,7 @@ test('legacy project names migrate, Codex title metadata refreshes, and real sam
   const index = join(directory, 'session_index.jsonl')
   writeFileSync(
     index,
-    '{partial\n' + JSON.stringify({ id: 'old-session', thread_name: 'Fix notch names' }) + '\n',
+    '{partial\n' + JSON.stringify({ id: 'old-session', thread_name: 'Fix companion names' }) + '\n',
   )
   const names = new SessionNames(index)
   const restored = new SessionStore(path, (harness, id) => names.lookup(harness, id))
@@ -492,13 +492,13 @@ test('legacy project names migrate, Codex title metadata refreshes, and real sam
   assert.equal(restored.snapshot().history[1].name, 'buddy', 'A supplied title is preserved')
   assert(restored.refreshNames())
   restored.apply(event('PreToolUse', 'old-session'))
-  assert.equal(restored.snapshot().sessions[0].name, 'Fix notch names')
+  assert.equal(restored.snapshot().sessions[0].name, 'Fix companion names')
   writeFileSync(
     index,
-    JSON.stringify({ id: 'old-session', thread_name: 'Improve notch names' }) + '\n',
+    JSON.stringify({ id: 'old-session', thread_name: 'Improve companion names' }) + '\n',
   )
   assert(restored.refreshNames(), 'Rename is picked up without a new turn')
-  assert.equal(restored.snapshot().sessions[0].name, 'Improve notch names')
+  assert.equal(restored.snapshot().sessions[0].name, 'Improve companion names')
   assert.equal(restored.snapshot().sessions.length, 1, 'Title metadata does not import sessions')
 })
 
@@ -527,15 +527,15 @@ test('completion notices expire and stop promoting sessions; unresolved attentio
     ordinal: 1,
     attention: [],
   }
-  assert.equal(notchSignal([done, working], at), 'success')
+  assert.equal(companionSignal([done, working], at), 'success')
   assert.equal(prioritizeSessions([working, done], at)[0].id, 'done')
   const later = at + COMPLETION_NOTICE_MS
   assert.equal(sessionNotification(done, later), undefined)
-  assert.equal(notchSignal([done, working], later), undefined)
+  assert.equal(companionSignal([done, working], later), undefined)
   assert.equal(prioritizeSessions([working, done], later)[0].id, 'working')
   assert.equal(done.status, 'completed', 'Notification expiry does not rewrite actual turn outcome')
   const waiting = { ...done, status: 'needs-attention' }
-  assert.equal(notchSignal([waiting, done], later), 'attention')
+  assert.equal(companionSignal([waiting, done], later), 'attention')
 })
 
 test('denied permission hints clear without resolving unrelated exact requests', (t) => {
