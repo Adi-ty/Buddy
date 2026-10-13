@@ -171,6 +171,7 @@ test('version detection retains prerelease and build identities for exact-versio
     '0.162.1-preview.2+custom.3',
   )
   assert.equal(parseCliVersion('Claude 2.1.295'), '2.1.295')
+  assert.equal(parseCliVersion('opencode v2.0.28'), '2.0.28')
   assert(isCliVersion('1.18.35-beta'))
   assert(!isCliVersion('not a version'))
   assert(ADAPTERS.opencode.compat.matches('2.0.0'))
