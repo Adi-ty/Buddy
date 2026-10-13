@@ -17,6 +17,10 @@ async function loadPlugin() {
             path: 'plugin-api',
             namespace: 'fixture',
           }))
+          builder.onResolve({ filter: /^@opencode\/client(?:\/service)?$/ }, (args) => ({
+            path: args.path.endsWith('/service') ? 'client-service' : 'client',
+            namespace: 'fixture',
+          }))
           builder.onResolve({ filter: /reporter\.mjs$/ }, () => ({
             path: 'reporter',
             namespace: 'fixture',
@@ -29,9 +33,13 @@ async function loadPlugin() {
             contents:
               args.path === 'plugin-api'
                 ? 'export const Plugin = { define: (definition) => definition }'
-                : args.path === 'reporter'
-                  ? 'export const report = (...args) => globalThis.__buddyPluginReport(...args)'
-                  : 'export const connectControls = (_path, _harness, callback) => globalThis.__buddyConnectControls(callback)',
+                : args.path === 'client-service'
+                  ? 'export const Service = { discover: async () => ({ url: "http://localhost:4096" }), headers: () => ({}) }'
+                  : args.path === 'client'
+                    ? 'export const OpenCode = { make: () => ({ session: { form: { list: async () => globalThis.__buddyForms ?? [], get: async () => globalThis.__buddyForm ?? null, reply: async (input) => globalThis.__buddyFormReplies?.push(input) } } }) }'
+                    : args.path === 'reporter'
+                      ? 'export const report = (...args) => globalThis.__buddyPluginReport(...args)'
+                      : 'export const connectControls = (_path, _harness, callback) => globalThis.__buddyConnectControls(callback)',
             loader: 'js',
           }))
         },
@@ -143,6 +151,14 @@ test('OpenCode V2 permission and form replies use their live session APIs', asyn
     state: { status: 'pending' },
   }
   const replies = []
+  globalThis.__buddyForms = [form]
+  globalThis.__buddyForm = form
+  globalThis.__buddyFormReplies = replies
+  t.after(() => {
+    delete globalThis.__buddyForms
+    delete globalThis.__buddyForm
+    delete globalThis.__buddyFormReplies
+  })
   const ctx = {
     location: { directory: '/projects/buddy' },
     session: {
@@ -152,12 +168,8 @@ test('OpenCode V2 permission and form replies use their live session APIs', asyn
         directory: '/projects/buddy',
         title: 'Session',
       }),
-      form: {
-        list: async () => [form],
-        get: async () => form,
-        reply: async (input) => replies.push(input),
-      },
     },
+    __form: form,
     permission: {
       list: async () => [
         { id: 'permission-1', sessionID: 'session-1', action: 'shell', resources: ['git status'] },
@@ -244,7 +256,7 @@ test('OpenCode V2 form.created events publish question attention from the nested
     type: 'form.created',
     data: {
       form: {
-        id: 'form-1',
+        id: 'form-event-form-1',
         sessionID: 'session-1',
         title: 'Choose an option',
         fields: [
@@ -267,7 +279,7 @@ test('OpenCode V2 form.created events publish question attention from the nested
     packets.some(
       (packet) =>
         packet.op === 'request' &&
-        packet.id === 'form-1' &&
+        packet.id === 'form-event-form-1' &&
         packet.kind === 'question' &&
         packet.questions?.[0]?.options?.[0]?.label === 'Continue',
     ),

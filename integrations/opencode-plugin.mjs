@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
+import { OpenCode } from '@opencode/client'
+import { Service } from '@opencode/client/service'
 import { Plugin } from '@opencode/plugin'
 import { connectControls } from './control-client.mjs'
 import { report } from './reporter.mjs'
@@ -39,6 +41,7 @@ const watched = new Set([
   'session.form.cancelled',
 ])
 const valueOf = (response) => response?.data ?? response
+const formClaims = new Set()
 
 export default Plugin.define({
   id: 'buddy.session-observer',
@@ -56,6 +59,23 @@ export default Plugin.define({
     const pendingReplies = new Set()
     const nativeRequests = new Set()
     const controller = new AbortController()
+    let apiClientPromise
+
+    const apiClient = () => {
+      if (!apiClientPromise) {
+        apiClientPromise = Service.discover().then((endpoint) => {
+          if (!endpoint) throw new Error('OpenCode service is unavailable')
+          return OpenCode.make({
+            baseUrl: endpoint.url,
+            headers: {
+              ...Service.headers(endpoint),
+              'x-opencode-directory': encodeURIComponent(ctx.location.directory),
+            },
+          })
+        })
+      }
+      return apiClientPromise
+    }
 
     const send = (type, properties = {}, eventId) => {
       const info =
@@ -99,6 +119,8 @@ export default Plugin.define({
         typeof request.sessionID !== 'string'
       )
         return
+      if (published.has(request.id)) return
+      if (kind === 'question' && formClaims.has(request.id)) return
       const details =
         kind === 'permission'
           ? JSON.stringify(
@@ -120,6 +142,7 @@ export default Plugin.define({
         questions,
         formId: kind === 'question' ? request.id : null,
       })
+      if (kind === 'question') formClaims.add(requestId)
       controls?.send({
         op: 'request',
         id: requestId,
@@ -128,16 +151,14 @@ export default Plugin.define({
         details,
         cwd: known.get(request.sessionID)?.cwd ?? ctx.location.directory,
         tool: kind === 'permission' ? (request.action ?? request.permission ?? null) : null,
+        persistent: kind === 'question',
         ...(kind === 'question' ? { questions } : {}),
       })
     }
 
     const listForms = async (sessionID) => {
-      if (typeof ctx.session.form?.list === 'function')
-        return valueOf(await ctx.session.form.list({ sessionID }))
-      if (typeof ctx.form?.list === 'function')
-        return valueOf(await ctx.form.list({ location: { directory: ctx.location.directory } }))
-      return []
+      const client = await apiClient()
+      return valueOf(await client.session.form.list({ sessionID }))
     }
     const replyToRequest = async (message) => {
       const context = published.get(message.id)
@@ -146,6 +167,8 @@ export default Plugin.define({
       if (response.decision === 'native') {
         nativeRequests.add(message.id)
         controls?.send({ op: 'result', id: message.id, ok: true })
+        published.delete(message.id)
+        formClaims.delete(message.id)
         return
       }
       pendingReplies.add(message.id)
@@ -157,6 +180,7 @@ export default Plugin.define({
           if (current?.id !== message.id || current.sessionID !== context.sessionId) {
             controls?.send({ op: 'resolved', id: message.id })
             published.delete(message.id)
+            formClaims.delete(message.id)
             return
           }
           if (!['allow', 'reject'].includes(response.decision)) throw new Error('Invalid response')
@@ -166,14 +190,10 @@ export default Plugin.define({
             reply: response.decision === 'allow' ? 'once' : 'reject',
           })
         } else {
-          if (
-            !Array.isArray(response.answers) ||
-            typeof ctx.session.form?.get !== 'function' ||
-            typeof ctx.session.form?.reply !== 'function'
-          )
-            throw new Error('Form replies are unavailable')
+          if (!Array.isArray(response.answers)) throw new Error('Invalid form answer')
+          const client = await apiClient()
           const current = valueOf(
-            await ctx.session.form.get({ sessionID: context.sessionId, formID: context.formId }),
+            await client.session.form.get({ sessionID: context.sessionId, formID: context.formId }),
           )
           if (
             current?.id !== context.formId ||
@@ -182,6 +202,7 @@ export default Plugin.define({
           ) {
             controls?.send({ op: 'resolved', id: message.id })
             published.delete(message.id)
+            formClaims.delete(message.id)
             return
           }
           const answer = {}
@@ -208,7 +229,7 @@ export default Plugin.define({
               answer[field.key] = parsed
             } else answer[field.key] = selected[0] ?? ''
           }
-          await ctx.session.form.reply({
+          await client.session.form.reply({
             sessionID: context.sessionId,
             formID: context.formId,
             answer,
@@ -216,6 +237,7 @@ export default Plugin.define({
         }
         controls?.send({ op: 'result', id: message.id, ok: true })
         published.delete(message.id)
+        formClaims.delete(message.id)
         void reconcile()
       } catch {
         controls?.send({ op: 'result', id: message.id, ok: false })
@@ -238,12 +260,15 @@ export default Plugin.define({
             controlEnabled = message.enabled === true
             if (changed && controlEnabled) void reconcile()
           } else if (message.op === 'reply') void replyToRequest(message)
-          else if (message.op === 'retired') published.delete(message.id)
-          else if (message.op === 'disabled') controlEnabled = false
+          else if (message.op === 'retired') {
+            published.delete(message.id)
+            formClaims.delete(message.id)
+          } else if (message.op === 'disabled') controlEnabled = false
         },
         () => {
           controlConnected = false
           controlEnabled = false
+          for (const id of published.keys()) formClaims.delete(id)
           published.clear()
         },
       )
@@ -350,6 +375,8 @@ export default Plugin.define({
             if (!ids.has(id)) {
               controls?.send({ op: 'resolved', id })
               published.delete(id)
+              formClaims.delete(id)
+              formClaims.delete(id)
             }
           for (const { request, kind, questions } of requests)
             if (!nativeRequests.has(request.id)) publishRequest(request, kind, questions)
@@ -379,6 +406,8 @@ export default Plugin.define({
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           if (disposed || !watched.has(event.type)) continue
+          if (event.location?.directory && event.location.directory !== ctx.location.directory)
+            continue
           const properties = event.properties ?? event.data ?? {}
           const form = properties.form ?? properties
           const sessionId = properties.sessionID ?? properties.info?.id ?? form.sessionID

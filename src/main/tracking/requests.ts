@@ -316,7 +316,7 @@ export class RequestBridge {
       (p) => p.owner === socket && p.sourceId === packet.id,
     )
     if (existing) {
-      if (!existing.hook) {
+      if (!existing.hook && packet.persistent !== true) {
         clearTimeout(existing.timer)
         existing.view = { ...existing.view, expiresAt: Date.now() + 70_000 }
         existing.timer = setTimeout(() => this.finish(existing.view.id, 'native'), 70_000)
@@ -374,7 +374,9 @@ export class RequestBridge {
     }
     const id = randomUUID()
     const createdAt = Date.now()
-    const expiresAt = createdAt + (packet.hook === true ? HOOK_WINDOW : 70_000)
+    const lifetime =
+      packet.hook === true ? HOOK_WINDOW : packet.persistent === true ? 86_400_000 : 70_000
+    const expiresAt = createdAt + lifetime
     const view: AgentRequest = {
       id,
       sessionId: `${harness}:${packet.sessionId}`,
@@ -405,7 +407,7 @@ export class RequestBridge {
       timer: setTimeout(() => {
         this.send(socket, { op: 'reply', id: packet.id, response: { decision: 'native' } })
         this.finish(id, 'native')
-      }, expiresAt - createdAt),
+      }, lifetime),
     }
     try {
       this.observed({
