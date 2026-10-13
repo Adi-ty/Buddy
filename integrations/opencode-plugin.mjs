@@ -31,6 +31,9 @@ const watched = new Set([
   'question.asked',
   'question.replied',
   'question.rejected',
+  'form.created',
+  'form.replied',
+  'form.cancelled',
   'session.form.created',
   'session.form.answered',
   'session.form.cancelled',
@@ -377,7 +380,8 @@ export default Plugin.define({
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           if (disposed || !watched.has(event.type)) continue
           const properties = event.properties ?? event.data ?? {}
-          const sessionId = properties.sessionID ?? properties.info?.id
+          const form = properties.form ?? properties
+          const sessionId = properties.sessionID ?? properties.info?.id ?? form.sessionID
           if (typeof sessionId === 'string') {
             if (
               [
@@ -407,14 +411,15 @@ export default Plugin.define({
             )
               active.delete(sessionId)
           }
-          send(event.type, properties, event.id)
+          send(event.type, event.type === 'form.created' ? form : properties, event.id)
           if (['permission.asked', 'permission.v2.asked'].includes(event.type))
             publishRequest(properties, 'permission')
           else if (event.type === 'question.asked')
             publishRequest(properties, 'question', properties.questions ?? [])
-          else if (event.type === 'session.form.created') {
-            const questions = formQuestions(properties)
-            if (questions) publishRequest(properties, 'question', questions)
+          else if (event.type === 'form.created' || event.type === 'session.form.created') {
+            const form = properties.form ?? properties
+            const questions = formQuestions(form)
+            if (questions) publishRequest(form, 'question', questions)
           }
           if (
             [
@@ -422,6 +427,8 @@ export default Plugin.define({
               'permission.v2.replied',
               'question.replied',
               'question.rejected',
+              'form.replied',
+              'form.cancelled',
               'session.form.answered',
               'session.form.cancelled',
             ].includes(event.type)

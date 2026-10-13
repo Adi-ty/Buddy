@@ -193,3 +193,85 @@ test('OpenCode V2 permission and form replies use their live session APIs', asyn
   assert(packets.some((packet) => packet.op === 'result' && packet.id === 'form-1' && packet.ok))
   assert(observations.some((observation) => observation.event === 'buddy.reconcile'))
 })
+
+test('OpenCode V2 form.created events publish question attention from the nested form', async (t) => {
+  const observations = []
+  const packets = []
+  let onControl
+  let publish
+  let wake = () => {}
+  globalThis.__buddyPluginReport = (_path, value) => observations.push(value)
+  globalThis.__buddyConnectControls = (callback) => {
+    onControl = callback
+    return { send: (packet) => packets.push(packet), close() {} }
+  }
+  t.after(() => {
+    delete globalThis.__buddyPluginReport
+    delete globalThis.__buddyConnectControls
+  })
+  const plugin = await loadPlugin()
+  const ctx = {
+    location: { directory: '/projects/buddy' },
+    session: {},
+    permission: {},
+    event: {
+      subscribe({ signal }) {
+        return {
+          async *[Symbol.asyncIterator]() {
+            const queue = []
+            publish = (event) => {
+              queue.push(event)
+              wake()
+            }
+            while (!signal.aborted) {
+              if (!queue.length) {
+                await new Promise((resolve) => (wake = resolve))
+                if (signal.aborted) break
+              }
+              while (queue.length) yield queue.shift()
+            }
+          },
+        }
+      },
+    },
+  }
+  const cleanup = plugin.setup(ctx)
+  t.after(cleanup)
+  await new Promise((resolve) => setImmediate(resolve))
+  onControl({ op: 'ready', enabled: true })
+  publish({
+    id: 'form-event-1',
+    type: 'form.created',
+    data: {
+      form: {
+        id: 'form-1',
+        sessionID: 'session-1',
+        title: 'Choose an option',
+        fields: [
+          {
+            key: 'choice',
+            type: 'string',
+            title: 'Choice',
+            options: [{ label: 'Continue', description: 'Continue the task' }],
+            custom: false,
+          },
+        ],
+      },
+    },
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert(
+    observations.some((item) => item.event === 'form.created' && item.sessionId === 'session-1'),
+  )
+  assert(
+    packets.some(
+      (packet) =>
+        packet.op === 'request' &&
+        packet.id === 'form-1' &&
+        packet.kind === 'question' &&
+        packet.questions?.[0]?.options?.[0]?.label === 'Continue',
+    ),
+  )
+  cleanup()
+  wake()
+})
