@@ -185,13 +185,13 @@ function SessionsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           <p className="mx-auto mt-3 max-w-[390px] text-sm leading-6 text-muted-foreground">
             {connected.length
               ? `Start a session in ${connected.map((item) => item.name).join(' or ')}. If you just installed the observer, restart the agent and follow its setup instructions in Integrations.`
-              : 'Install an observer to see your agent’s activity and permission requests in the notch.'}
+              : 'Install an observer to see your agent’s activity and permission requests in the companion.'}
           </p>
           <Button className="mt-6" onClick={() => navigate('/integrations')}>
             {connected.length ? 'Check integrations' : 'Set up integrations'} <ArrowRight />
           </Button>
           <p className="mt-5 text-xs text-muted-foreground">
-            The notch appears automatically when a session sends activity.
+            The companion appears automatically when a session sends activity.
           </p>
         </section>
       )}

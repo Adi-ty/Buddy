@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadSource } from './load-source.mjs'
 
-const { CodexAppServer, SessionStore, notchRecords, sessionFamilies } =
+const { CodexAppServer, SessionStore, companionRecords, sessionFamilies } =
   await loadSource('tests/codex-entry.ts')
 
 // Exercise the state machine without the Unix socket transport, which is
@@ -84,7 +84,7 @@ test(
     await bridge.poll()
     assert.equal(store.get('codex:thread').status, 'completed')
     assert.equal(store.get('codex:thread').statusChangedAt, completedAt)
-    assert.equal(notchRecords(store.snapshot().sessions).length, 0)
+    assert.equal(companionRecords(store.snapshot().sessions).length, 0)
     store.expire(Date.now(), true)
     assert.equal(store.get('codex:thread').presence, 'stale')
     t.mock.timers.tick(65_000)
@@ -206,7 +206,7 @@ test('native Codex failed child turns retain their outcome without turning a wor
   assert.equal(store.get('codex:child').status, 'error')
   assert.equal(store.get('codex:child').turnActive, false)
   assert.equal(sessionFamilies(store.snapshot().sessions)[0].summary.status, 'working')
-  assert.equal(notchRecords(store.snapshot().sessions).length, 1)
+  assert.equal(companionRecords(store.snapshot().sessions).length, 1)
   bridge.receive({
     id: 99,
     method: 'item/commandExecution/requestApproval',

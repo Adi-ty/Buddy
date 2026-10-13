@@ -78,7 +78,7 @@ export default async function BuddyPlugin({ client, directory }) {
     const deadline = setTimeout(() => controller.abort(), 5000)
     try {
       // Recheck at the actual live authority before a mutation. A terminal
-      // answer/cancellation may have won since the user opened the notch.
+      // answer/cancellation may have won since the user opened the companion.
       const pending = await client._client.get({
         url: `/${context.kind}`,
         query: { directory },

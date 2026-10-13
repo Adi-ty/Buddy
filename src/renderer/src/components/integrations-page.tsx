@@ -49,8 +49,8 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
               action === 'enable-controls'
                 ? harness === 'codex'
                   ? 'Native Codex replies enabled. Connecting to its local app server.'
-                  : `Notch replies enabled. ${harness === 'opencode' ? 'Restart OpenCode once to load the updated plugin.' : 'Restart your agent once to load the response hooks.'}`
-                : 'Notch replies disabled. Pending requests return to your agent.',
+                  : `Companion replies enabled. ${harness === 'opencode' ? 'Restart OpenCode once to load the updated plugin.' : 'Restart your agent once to load the response hooks.'}`
+                : 'Companion replies disabled. Pending requests return to your agent.',
           })
           return
         }
@@ -83,7 +83,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
     <>
       <PageHeading
         title="Integrations"
-        subtitle="Connect your agents to keep their sessions in the notch."
+        subtitle="Connect your agents to keep their sessions in the companion."
       >
         <Button
           variant="outline"
@@ -104,8 +104,8 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           onCancel={() => setRemoving(null)}
           onConfirm={() => void act('remove', removing)}
         >
-          Session tracking and notch replies will stop for this agent. Your agent’s other settings
-          will be retained.
+          Session tracking and companion replies will stop for this agent. Your agent’s other
+          settings will be retained.
           <Notice className="mt-3" message={noticeScope === removing ? notice : null} />
         </ConfirmDialog>
       )}
@@ -149,7 +149,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                   </div>
                   <p className="mt-4 text-sm leading-6 text-muted-foreground">
                     {installed && receiving
-                      ? 'Connected. Sessions are appearing in your notch.'
+                      ? 'Connected. Sessions are appearing in the companion.'
                       : harness.setup}
                   </p>
                   <Notice
@@ -191,7 +191,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                     <div className="mt-4 rounded-xl border border-border p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-xs font-medium">Reply from the notch</p>
+                          <p className="text-xs font-medium">Reply from the companion</p>
                           <p className="mt-1 text-xs text-muted-foreground">
                             Approvals and structured questions.
                           </p>
@@ -291,7 +291,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           settings and saves a backup.
         </p>
         <p className="mt-2">
-          With notch replies enabled, pending tool arguments and structured questions are shown
+          With companion replies enabled, pending tool arguments and structured questions are shown
           locally in Buddy. They and your answers are kept in memory, then discarded when the
           request ends.
         </p>

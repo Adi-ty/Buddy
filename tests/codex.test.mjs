@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { loadSource } from './load-source.mjs'
 import { codexFixture } from './codex-fixture.mjs'
 
-const { CodexAppServer, codexSocketPath, codexRequest, SessionStore, notchRecords } =
+const { CodexAppServer, codexSocketPath, codexRequest, SessionStore, companionRecords } =
   await loadSource('tests/codex-entry.ts')
 const until = async (check) => {
   const end = Date.now() + 8000
@@ -125,7 +125,7 @@ test(
 )
 
 test(
-  'answering in native Codex retires Buddy controls and rejects a stale notch click',
+  'answering in native Codex retires Buddy controls and rejects a stale companion click',
   { timeout: 10_000 },
   async (t) => {
     const { server, bridge, native } = await fixture(t)
@@ -228,7 +228,7 @@ test(
 )
 
 test(
-  'unattachable loaded sessions do not break replies, and inactive or unloaded threads stay out of the notch',
+  'unattachable loaded sessions do not break replies, and inactive or unloaded threads stay out of the companion',
   { timeout: 10_000 },
   async (t) => {
     const { server, bridge, store } = await fixture(t, (server) => {
@@ -264,7 +264,7 @@ test(
 )
 
 test(
-  'native completion stays green through idle notifications and expires from the notch; native failures stay errors',
+  'native completion stays green through idle notifications and expires from the companion; native failures stay errors',
   { timeout: 10_000 },
   async (t) => {
     const { server, store } = await fixture(t)
@@ -285,7 +285,7 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal(store.get('codex:native-thread').status, 'completed')
     assert.equal(store.get('codex:native-thread').statusChangedAt, at)
-    assert.equal(notchRecords(store.snapshot().sessions, at + 13_000).length, 0)
+    assert.equal(companionRecords(store.snapshot().sessions, at + 13_000).length, 0)
     server.broadcast('native-thread', {
       method: 'turn/started',
       params: { threadId: 'native-thread', turn: { id: 'failed-turn' } },

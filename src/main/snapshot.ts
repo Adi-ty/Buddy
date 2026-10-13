@@ -23,7 +23,6 @@ export function createInitialSnapshot(): BuddySnapshot {
     harnesses,
     avatarPreviews: createAvatarPreviews(),
     overlay: {
-      displayId: null,
       geometry: 'loading',
       message: null,
       displays: [],

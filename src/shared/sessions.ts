@@ -34,7 +34,7 @@ export function sessionErrorIsCurrent(
   return true
 }
 
-export function notchRecords(
+export function companionRecords(
   records: readonly SessionRecord[],
   now = Date.now(),
   context: readonly SessionRecord[] = records,
@@ -67,7 +67,7 @@ export function sessionNotification(
   return sessionSignal(session.status)
 }
 
-export function notchSignal(
+export function companionSignal(
   records: readonly SessionRecord[],
   now = Date.now(),
 ): SessionSignal | undefined {

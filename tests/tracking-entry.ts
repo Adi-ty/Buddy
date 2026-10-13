@@ -4,10 +4,10 @@ export { normalizeObservation } from '../src/main/tracking/events'
 export { IntegrationManager } from '../src/main/tracking/integrations'
 export {
   prioritizeSessions,
-  notchSignal,
+  companionSignal,
   sessionNotification,
   COMPLETION_NOTICE_MS,
-  notchRecords,
+  companionRecords,
 } from '../src/shared/sessions'
 
 export { sessionFamilies, relativeTime } from '../src/shared/session-families'

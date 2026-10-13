@@ -17,8 +17,9 @@ import {
 } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { DASHBOARD_ROUTES, IPC } from '../shared/contracts'
+import { COMPANION_MOVES, type CompanionMove } from '../shared/companion'
 import { isHarnessId } from '../shared/harnesses'
-import type { BuddySnapshot, DashboardRoute, OverlayOptions, HarnessId } from '../shared/contracts'
+import type { BuddySnapshot, DashboardRoute, HarnessId } from '../shared/contracts'
 import { createInitialSnapshot } from './snapshot'
 import { OverlayController } from './overlay'
 import { SessionStore } from './tracking/store'
@@ -228,10 +229,11 @@ function createOverlayWindow(): BrowserWindow {
     transparent: true,
     backgroundColor: '#00000000',
     type: 'panel',
+    acceptFirstMouse: true,
     focusable: false,
     skipTaskbar: true,
     resizable: false,
-    movable: false,
+    movable: false, // Main moves the window from a captured pointer; native dragging stays disabled.
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -256,7 +258,7 @@ function createOverlayWindow(): BrowserWindow {
   window.setIgnoreMouseEvents(true, { forward: true })
   void window
     .loadURL(`${developmentURL ?? rendererURL}#overlay`)
-    .catch((error) => console.error('Notch load failed', error))
+    .catch((error) => console.error('Companion load failed', error))
   return window
 }
 
@@ -454,7 +456,10 @@ function installTray(): void {
         { type: 'separator' },
         { label: 'Open dashboard', click: () => createDashboard('/sessions') },
         { label: 'Integrations', click: () => createDashboard('/integrations') },
-        { label: 'Refresh display placement', click: () => overlay?.refresh() },
+        {
+          label: 'Reset companion position',
+          click: () => runTask('Reset companion position', () => overlay?.resetPosition()),
+        },
         { type: 'separator' },
         {
           label: 'Desktop notifications',
@@ -545,27 +550,27 @@ if (!app.requestSingleInstanceLock()) {
           },
           createWindow: createOverlayWindow,
           openDashboard: () => createDashboard('/sessions'),
+          loadPosition: () => settings?.companionPosition ?? null,
+          savePosition: (position) => {
+            settings?.setCompanionPosition(position)
+          },
         },
         mainDirectory,
       )
-      ipcMain.handle(IPC.overlayOptions, (event, ...args: unknown[]) => {
-        trustedRequest(event, true)
-        const value = args[0] as Partial<OverlayOptions> | undefined
+      ipcMain.handle(IPC.moveCompanion, (event, ...args: unknown[]) => {
+        trustedRequest(event)
         if (
+          BrowserWindow.fromWebContents(event.sender) === dashboard ||
           args.length !== 1 ||
-          !value ||
-          typeof value !== 'object' ||
-          Array.isArray(value) ||
-          (value.displayId !== null &&
-            !snapshot.overlay.displays.some((display) => display.id === value.displayId))
+          !COMPANION_MOVES.includes(args[0] as CompanionMove)
         )
-          throw new Error('Invalid overlay options')
-        overlay?.configure({ displayId: value.displayId as number | null })
+          throw new Error('Invalid companion movement request')
+        overlay?.move(args[0] as CompanionMove)
       })
-      ipcMain.handle(IPC.refreshDisplays, (event, ...args: unknown[]) => {
+      ipcMain.handle(IPC.resetCompanionPosition, (event, ...args: unknown[]) => {
         trustedRequest(event, true)
-        if (args.length) throw new Error('Invalid display refresh request')
-        overlay?.refresh()
+        if (args.length) throw new Error('Invalid position reset request')
+        overlay?.resetPosition()
       })
       ipcMain.handle(IPC.overlayExpanded, (event, ...args: unknown[]) => {
         trustedRequest(event)
@@ -679,7 +684,7 @@ if (!app.requestSingleInstanceLock()) {
           args.length !== 1 ||
           typeof args[0] !== 'boolean'
         )
-          throw new Error('Invalid notch input request')
+          throw new Error('Invalid companion input request')
         overlay?.setInputActive(args[0])
       })
       ipcMain.handle(IPC.clearHistory, (event, ...args: unknown[]) => {
@@ -696,9 +701,9 @@ if (!app.requestSingleInstanceLock()) {
         app.dock?.hide()
       }
       installTray()
-      overlay.start()
       const profile = app.getPath('userData')
       settings = new ProfileSettings(join(profile, 'settings.json'))
+      overlay.start()
       notifications = new SessionNotifications(
         () => settings?.desktopNotifications ?? true,
         () => createDashboard('/sessions'),

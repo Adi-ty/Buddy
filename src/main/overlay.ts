@@ -1,14 +1,11 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { app, BrowserWindow, globalShortcut, powerMonitor, screen } from 'electron'
-import type { OverlayOptions, OverlayState, SessionRecord } from '../shared/contracts'
-import {
-  matchDisplays,
-  parseNativeDisplays,
-  safeActualBounds,
-  shelfBounds,
-} from './display-geometry'
-import { COMPLETION_NOTICE_MS, notchRecords } from '../shared/sessions'
+import type { OverlayState, Rect, SessionRecord } from '../shared/contracts'
+import type { CompanionMove, CompanionPosition } from '../shared/companion'
+import { companionBounds, companionDisplay, companionPosition } from './companion-placement'
+import { matchDisplays, parseNativeDisplays, safeActualBounds } from './display-geometry'
+import { COMPLETION_NOTICE_MS, companionRecords } from '../shared/sessions'
 import { runTask } from './tasks'
 
 interface OverlayHost {
@@ -16,6 +13,8 @@ interface OverlayHost {
   publish(state: OverlayState): void
   createWindow(): BrowserWindow
   openDashboard(): void
+  loadPosition(): CompanionPosition | null
+  savePosition(position: CompanionPosition | null): void
 }
 
 export class OverlayController {
@@ -34,12 +33,15 @@ export class OverlayController {
   private sessions: readonly SessionRecord[] = []
   private context: readonly SessionRecord[] = []
   private displayedIds = new Set<string>()
-  private hoveringAt: number | null = null
-  private hoverSuppressed = false
+  private position: CompanionPosition | null = null
+  private positionMessage: string | null = null
+  private drag: { cursor: { x: number; y: number }; bounds: Rect; moved: boolean } | null = null
+  private dragTimer: ReturnType<typeof setInterval> | null = null
   private inputActive = false
   private completionTimer: ReturnType<typeof setTimeout> | null = null
   private readonly onDisplayChange = (): void => this.invalidate()
   private readonly onSuspend = (): void => {
+    this.stopDrag()
     this.suspended = true
     this.generation++
     this.probe?.abort()
@@ -62,11 +64,11 @@ export class OverlayController {
   ) {}
 
   private task(action: () => void): void {
-    runTask('Notch update', action, () => {
+    runTask('Companion update', action, () => {
       this.hide()
       this.update({
         geometry: 'unavailable',
-        message: 'The notch could not update. Retry placement in Settings.',
+        message: 'The companion could not update. Reset its position from Buddy’s menu.',
       })
     })
   }
@@ -75,10 +77,11 @@ export class OverlayController {
     if (process.platform !== 'darwin') {
       this.update({
         geometry: 'unavailable',
-        message: 'The session notch requires macOS.',
+        message: 'The companion requires macOS.',
       })
       return
     }
+    this.position = this.host.loadPosition()
     screen.on('display-added', this.onDisplayChange)
     screen.on('display-removed', this.onDisplayChange)
     screen.on('display-metrics-changed', this.onDisplayChange)
@@ -98,10 +101,89 @@ export class OverlayController {
     this.host.publish({ ...this.host.getState(), ...changes })
   }
 
-  configure(options: OverlayOptions): void {
-    this.rendererFailures = 0
-    this.update({ ...options, expanded: false })
+  resetPosition(): void {
+    this.savePosition(null)
+    this.stopDrag()
+    this.expand(false)
+    this.refresh()
+  }
+
+  move(action: CompanionMove): void {
+    if (action === 'cancel') {
+      this.stopDrag()
+      this.apply()
+      return
+    }
+    if (action === 'finish') {
+      if (!this.drag) return
+      this.moveToCursor()
+      const moved = this.drag.moved
+      this.stopDrag()
+      if (moved) this.rememberPosition()
+      this.setLiveSessions(this.sessions, this.context)
+      return
+    }
+    if (!this.window || !this.ready || !this.host.getState().visible || this.suspended) return
+    if (action === 'start') {
+      if (this.drag) return
+      this.drag = {
+        cursor: screen.getCursorScreenPoint(),
+        bounds: this.window.getBounds(),
+        moved: false,
+      }
+      this.leavingAt = null
+      // Read native logical coordinates so renderer zoom and mixed display scales cannot skew a drag.
+      this.dragTimer = setInterval(() => this.task(() => this.moveToCursor()), 16)
+      return
+    }
+    if (this.drag) return
+    const bounds = this.window.getBounds()
+    const dx = action === 'left' ? -20 : action === 'right' ? 20 : 0
+    const dy = action === 'up' ? -20 : action === 'down' ? 20 : 0
+    this.window.setBounds({ ...bounds, x: bounds.x + dx, y: bounds.y + dy }, false)
+    this.rememberPosition()
     this.apply()
+  }
+
+  private moveToCursor(): void {
+    if (!this.drag || !this.window || this.window.isDestroyed()) return
+    const cursor = screen.getCursorScreenPoint()
+    const dx = cursor.x - this.drag.cursor.x
+    const dy = cursor.y - this.drag.cursor.y
+    if (!this.drag.moved && Math.hypot(dx, dy) < 4) return
+    this.drag.moved = true
+    const x = Math.round(this.drag.bounds.x + dx)
+    const y = Math.round(this.drag.bounds.y + dy)
+    const current = this.window.getBounds()
+    if (current.x !== x || current.y !== y)
+      this.window.setBounds({ ...this.drag.bounds, x, y }, false)
+  }
+
+  private stopDrag(): void {
+    if (this.dragTimer) clearInterval(this.dragTimer)
+    this.dragTimer = null
+    this.drag = null
+    this.leavingAt = null
+  }
+
+  private rememberPosition(): void {
+    if (!this.window || this.window.isDestroyed()) return
+    const bounds = this.window.getBounds()
+    const displayId = screen.getDisplayMatching(bounds).id
+    const display = this.host.getState().displays.find((item) => item.id === displayId)
+    if (!display) return
+    this.savePosition(companionPosition(display, bounds))
+  }
+
+  private savePosition(position: CompanionPosition | null): void {
+    this.position = position
+    try {
+      this.host.savePosition(position)
+      this.positionMessage = null
+    } catch (error) {
+      console.error('Could not save companion position', error)
+      this.positionMessage = 'Position changed for this run, but could not be saved.'
+    }
   }
 
   setLiveSessions(
@@ -113,10 +195,10 @@ export class OverlayController {
     if (this.completionTimer) clearTimeout(this.completionTimer)
     this.completionTimer = null
     const state = this.host.getState()
-    const fresh = notchRecords(sessions, Date.now(), context)
+    const fresh = companionRecords(sessions, Date.now(), context)
     const freshIds = new Set(fresh.map((item) => item.id))
     const completionHoldIds =
-      state.visible && (this.inputActive || this.pointerInside())
+      state.visible && (this.drag || this.inputActive || this.pointerInside())
         ? sessions
             .filter(
               (item) =>
@@ -129,6 +211,7 @@ export class OverlayController {
     if (completionHoldIds.join('|') !== (state.completionHoldIds ?? []).join('|'))
       this.update({ completionHoldIds })
     this.displayedIds = new Set([...freshIds, ...completionHoldIds])
+    if (!this.displayedIds.size) this.stopDrag()
     const deadlines = sessions
       .filter((item) => item.status === 'completed')
       .map((item) => item.statusChangedAt + COMPLETION_NOTICE_MS)
@@ -143,11 +226,7 @@ export class OverlayController {
   }
 
   setInputActive(enabled: boolean): void {
-    if (
-      !this.window ||
-      this.window.isDestroyed() ||
-      (enabled && (!this.host.getState().expanded || !this.host.getState().visible))
-    )
+    if (!this.window || this.window.isDestroyed() || (enabled && !this.host.getState().visible))
       return
     this.inputActive = enabled
     this.window.setFocusable(enabled)
@@ -157,16 +236,14 @@ export class OverlayController {
   }
 
   expand(expanded: boolean): void {
-    if (!this.sessions.length) return
+    if (!this.sessions.length || this.drag) return
     if (!expanded && this.inputActive) this.setInputActive(false)
     this.update({ expanded, ...(!expanded ? { completionHoldIds: [] } : {}) })
     if (!expanded)
       this.displayedIds = new Set(
-        notchRecords(this.sessions, Date.now(), this.context).map((item) => item.id),
+        companionRecords(this.sessions, Date.now(), this.context).map((item) => item.id),
       )
     this.leavingAt = null
-    this.hoveringAt = null
-    this.hoverSuppressed = !expanded
     this.apply()
   }
 
@@ -178,6 +255,7 @@ export class OverlayController {
 
   private invalidate(): void {
     if (this.disposed || this.suspended) return
+    this.stopDrag()
     this.generation++
     this.probe?.abort()
     this.hide()
@@ -233,31 +311,24 @@ export class OverlayController {
   }
 
   private apply(): void {
+    if (this.drag) return
     const state = this.host.getState()
     if (
       this.suspended ||
       this.disposed ||
       this.rendererFailures >= 3 ||
-      !notchRecords(this.sessions, Date.now(), this.context, state.completionHoldIds).length ||
+      !companionRecords(this.sessions, Date.now(), this.context, state.completionHoldIds).length ||
       state.geometry !== 'ready'
     ) {
       this.hide()
       return
     }
-    const selected =
-      state.displayId === null
-        ? null
-        : state.displays.find((display) => display.id === state.displayId)
-    const anchor =
-      selected ??
-      state.displays.find((display) => display.builtIn && display.camera) ??
-      state.displays.find((display) => display.builtIn) ??
-      state.displays[0]
+    const anchor = companionDisplay(state.displays, this.position)
     if (!anchor) {
       this.hide()
       return
     }
-    const bounds = shelfBounds(anchor, state.expanded)
+    const bounds = companionBounds(anchor, state.expanded, this.position ?? undefined)
     if (!bounds) {
       this.hide()
       this.update({ message: 'The selected display has insufficient room for this overlay.' })
@@ -266,7 +337,9 @@ export class OverlayController {
     if (!this.window || this.window.isDestroyed()) {
       if (this.retry && this.rendererFailures) return
       const window = this.host.createWindow()
+      window.on('unresponsive', () => this.task(() => this.move('cancel')))
       window.on('blur', () => {
+        if (this.drag) this.move('cancel')
         this.inputActive = false
         if (!window.isDestroyed()) window.setFocusable(false)
         this.leavingAt = null
@@ -278,6 +351,7 @@ export class OverlayController {
         this.apply()
       })
       const rendererFailed = () => {
+        this.stopDrag()
         window.destroy()
         this.window = null
         this.ready = false
@@ -289,7 +363,7 @@ export class OverlayController {
           message:
             this.rendererFailures < 3
               ? 'Overlay renderer stopped. Reopening after recovery.'
-              : 'Overlay renderer repeatedly stopped. Refresh display placement from Buddy’s menu to retry.',
+              : 'Overlay renderer repeatedly stopped. Reset companion position from Buddy’s menu to retry.',
         })
         if (this.sessions.length && this.rendererFailures < 3) {
           this.retry = setTimeout(
@@ -306,7 +380,12 @@ export class OverlayController {
         if (isMainFrame && code !== -3 && !window.isDestroyed()) rendererFailed()
       })
     }
-    this.window.setBounds(bounds, false)
+    const current = this.window.getBounds()
+    if (
+      !current ||
+      Object.keys(bounds).some((key) => bounds[key as keyof Rect] !== current[key as keyof Rect])
+    )
+      this.window.setBounds(bounds, false)
     const actual = this.window.getBounds()
     if (!safeActualBounds(anchor, actual)) {
       this.hide()
@@ -322,10 +401,7 @@ export class OverlayController {
       anchorId: anchor.id,
       actualBounds: actual,
       visible: this.ready,
-      message:
-        selected || state.displayId === null
-          ? null
-          : 'Selected display disconnected. Using an available display.',
+      message: this.positionMessage,
     })
     if (!this.polling && this.ready)
       this.polling = setInterval(() => this.task(() => this.checkPointer()), 200)
@@ -333,16 +409,11 @@ export class OverlayController {
 
   private checkPointer(): void {
     const state = this.host.getState()
-    if (!this.window || !state.visible) return
+    if (!this.window || !state.visible || this.drag) return
     const inside = this.pointerInside()
     if (!state.expanded) {
-      if (!inside) {
-        this.hoveringAt = null
-        this.hoverSuppressed = false
-        if (state.completionHoldIds?.length) this.setLiveSessions(this.sessions, this.context)
-      } else if (this.hoverSuppressed) return
-      else if (this.hoveringAt === null) this.hoveringAt = Date.now()
-      else if (Date.now() - this.hoveringAt > 350) this.expand(true)
+      if (!inside && state.completionHoldIds?.length)
+        this.setLiveSessions(this.sessions, this.context)
       return
     }
     if (inside || this.inputActive) this.leavingAt = null
@@ -363,11 +434,11 @@ export class OverlayController {
   }
 
   private hide(): void {
+    this.stopDrag()
     if (this.inputActive) this.setInputActive(false)
     if (this.polling) clearInterval(this.polling)
     this.polling = null
     this.leavingAt = null
-    this.hoveringAt = null
     this.displayedIds.clear()
     if (this.window && !this.window.isDestroyed()) {
       this.window.setIgnoreMouseEvents(true, { forward: true })

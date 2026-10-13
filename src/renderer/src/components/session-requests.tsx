@@ -64,5 +64,5 @@ function attentionHint(session: SessionRecord, harness: HarnessCatalogEntry, que
     return 'Answer in Claude Code. Subagent requests stay there so its prompt isn’t delayed.'
   if (harness.controls)
     return `The request details haven’t reached Buddy. Answer in ${name}; restart ${name} once after enabling replies.`
-  return `Answer in ${name}, or enable notch replies in Integrations.`
+  return `Answer in ${name}, or enable companion replies in Integrations.`
 }

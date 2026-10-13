@@ -133,6 +133,33 @@ test('settings persist exact version consent and preserve unrelated or damaged d
   assert.equal(readFileSync(path, 'utf8'), '{broken')
 })
 
+test('companion position persists independently and invalid positions fall back safely', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'buddy-position-test-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const path = join(directory, 'settings.json')
+  const settings = new ProfileSettings(path)
+  const position = { displayId: 2, displayUuid: 'external', x: 0.25, y: 1 }
+  settings.setDesktopNotifications(false)
+  settings.setCompanionPosition(position)
+  const restored = new ProfileSettings(path)
+  assert.deepEqual(restored.companionPosition, position)
+  assert.equal(restored.desktopNotifications, false)
+  restored.setCompanionPosition(null)
+  assert.equal(new ProfileSettings(path).companionPosition, null)
+  for (const invalid of [
+    { ...position, x: -1 },
+    { ...position, y: 2 },
+    { ...position, x: null },
+    { ...position, displayId: '2' },
+    {},
+    [],
+  ]) {
+    assert.throws(() => settings.setCompanionPosition(invalid))
+    writeFileSync(path, JSON.stringify({ companionPosition: invalid }))
+    assert.equal(new ProfileSettings(path).companionPosition, null)
+  }
+})
+
 test(
   'unverified installs require explicit exact-version consent and cannot bypass feature probes',
   { timeout: 10_000 },

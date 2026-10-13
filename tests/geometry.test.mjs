@@ -2,8 +2,14 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadSource } from './load-source.mjs'
 
-const { parseNativeDisplays, matchDisplays, shelfBounds, safeActualBounds } =
-  await loadSource('tests/geometry-entry.ts')
+const {
+  parseNativeDisplays,
+  matchDisplays,
+  companionBounds,
+  companionPosition,
+  companionDisplay,
+  safeActualBounds,
+} = await loadSource('tests/geometry-entry.ts')
 const native = {
   id: 1,
   uuid: 'built-in-display',
@@ -31,9 +37,9 @@ test('Retina geometry uses logical points and keeps both compact and expanded ov
   assert.deepEqual(display.camera, { x: 650, y: 0, width: 212, height: 38 })
   assert.deepEqual(display.auxiliaryLeft, { x: 0, y: 0, width: 650, height: 38 })
   for (const expanded of [false, true]) {
-    const bounds = shelfBounds(display, expanded)
+    const bounds = companionBounds(display, expanded)
     assert(bounds)
-    assert.equal(bounds.x + bounds.width / 2, 756)
+    assert.equal(bounds.x + bounds.width, electron.workArea.width - 12)
     assert(bounds.y >= electron.workArea.y)
     assert(safeActualBounds(display, bounds))
     assert(!safeActualBounds(display, { ...bounds, y: 0 }))
@@ -57,10 +63,10 @@ test('native Y conversion follows display identity across negative origins and d
   const [display] = matchDisplays(parse([relocated]), [{ ...electron, id: 99 }, matched])
   assert.deepEqual(display.camera, { x: -862, y: -982, width: 212, height: 38 })
   assert.deepEqual(display.auxiliaryRight, { x: -650, y: -982, width: 650, height: 38 })
-  assert(safeActualBounds(display, shelfBounds(display, true)))
+  assert(safeActualBounds(display, companionBounds(display, true)))
 })
 
-test('screens without a notch use the work area; cramped displays decline an unsafe overlay', () => {
+test('screens without a camera use the work area; cramped displays decline an unsafe overlay', () => {
   const ordinary = {
     ...native,
     builtIn: false,
@@ -71,13 +77,13 @@ test('screens without a notch use the work area; cramped displays decline an uns
   delete ordinary.auxiliaryRight
   const [display] = matchDisplays(parse([ordinary]), [{ ...electron, scaleFactor: 1 }])
   assert.equal(display.camera, null)
-  assert(safeActualBounds(display, shelfBounds(display, false)))
+  assert(safeActualBounds(display, companionBounds(display, false)))
   assert.equal(
-    shelfBounds({ ...display, workArea: { ...display.workArea, width: 280 } }, false),
+    companionBounds({ ...display, workArea: { ...display.workArea, width: 280 } }, false),
     null,
   )
   assert.equal(
-    shelfBounds({ ...display, workArea: { ...display.workArea, height: 300 } }, true),
+    companionBounds({ ...display, workArea: { ...display.workArea, height: 240 } }, true),
     null,
   )
 })
@@ -107,4 +113,46 @@ test('ambiguous display matches and malformed native snapshots fail closed', () 
     [{ ...native, safeAreaInsets: { ...native.safeAreaInsets, top: -1 } }],
   ])
     assert.throws(() => parse(displays))
+})
+
+test('expansion grows inward at every edge and retains the compact anchor across scaling', () => {
+  const [display] = matchDisplays(parse([native]), [electron])
+  for (const x of [0, 0.25, 0.5, 0.75, 1]) {
+    for (const y of [0, 0.25, 0.5, 0.75, 1]) {
+      const position = { x, y }
+      const compact = companionBounds(display, false, position)
+      const expanded = companionBounds(display, true, position)
+      assert(safeActualBounds(display, compact))
+      assert(safeActualBounds(display, expanded))
+      assert(expanded.x <= compact.x && expanded.y <= compact.y)
+      assert(expanded.x + expanded.width >= compact.x + compact.width)
+      assert(expanded.y + expanded.height >= compact.y + compact.height)
+      const saved = companionPosition(display, compact)
+      assert.deepEqual(companionBounds(display, false, saved), compact)
+      const scaled = {
+        ...display,
+        camera: { ...display.camera, y: -700 },
+        bounds: { x: -1000, y: -700, width: 1000, height: 700 },
+        workArea: { x: -960, y: -662, width: 960, height: 638 },
+      }
+      assert(safeActualBounds(scaled, companionBounds(scaled, true, saved)))
+    }
+  }
+  const short = { ...display, workArea: { ...display.workArea, height: 300 } }
+  const expanded = companionBounds(short, true)
+  assert.equal(expanded.height, 276, 'Small screens get a scrollable, shorter panel')
+  assert(safeActualBounds(short, expanded))
+})
+
+test('saved display identity survives ID changes and disconnected displays fall back', () => {
+  const [display] = matchDisplays(parse([native]), [electron])
+  const saved = companionPosition(display, companionBounds(display, false))
+  const reconnected = { ...display, id: 99 }
+  assert.equal(companionDisplay([reconnected], saved), reconnected)
+  const external = { ...display, id: 2, uuid: 'external', builtIn: false }
+  assert.equal(companionDisplay([external], saved), external)
+  assert.equal(companionDisplay([], saved), undefined)
+  const clamped = companionPosition(display, { x: -9000, y: 9000, width: 320, height: 60 })
+  assert.equal(clamped.x, 0)
+  assert.equal(clamped.y, 1)
 })
