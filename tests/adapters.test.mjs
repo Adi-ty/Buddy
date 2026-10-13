@@ -130,6 +130,7 @@ test('adapter event fixtures preserve lifecycle, completion and provider-specifi
     ],
     ['opencode', 'session.created', { title: 'Title' }, null, 'metadata'],
     ['opencode', 'session.status', { status: 'retry' }, 'working', 'observe'],
+    ['opencode', 'session.status', { status: 'running' }, 'working', 'observe'],
     ['opencode', 'session.status', { status: 'idle' }, 'idle', 'observe'],
     ['opencode', 'session.idle', {}, 'completed', 'observe'],
     ['opencode', 'permission.v2.asked', {}, 'needs-attention', 'permission'],

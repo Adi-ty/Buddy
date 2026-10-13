@@ -41,7 +41,7 @@ export const opencode: HarnessAdapter = {
         break
       case 'session.status':
       case 'buddy.reconcile': {
-        if (!['busy', 'idle', 'retry'].includes(String(p.status))) return null
+        if (!['busy', 'idle', 'retry', 'running'].includes(String(p.status))) return null
         result = {
           status: p.status === 'idle' ? 'idle' : 'working',
           action: 'observe',
