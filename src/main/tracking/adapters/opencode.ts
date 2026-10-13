@@ -65,6 +65,14 @@ export const opencode: HarnessAdapter = {
         }
         break
       }
+      case 'session.step.started':
+      case 'session.step.ended':
+      case 'session.tool.called':
+      case 'session.tool.progress':
+      case 'session.tool.success':
+      case 'session.tool.error':
+        result = { status: 'working', action: 'observe', turnActive: true }
+        break
       case 'session.idle':
         result = {
           status: 'completed',

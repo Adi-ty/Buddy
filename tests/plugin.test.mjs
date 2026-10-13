@@ -59,7 +59,6 @@ test('OpenCode V2 plugin subscribes to V2 events and cleans up its subscription'
   const ctx = {
     location: { directory: '/projects/buddy' },
     session: {
-      active: async () => ({ 'session-1': { type: 'running' } }),
       get: async ({ sessionID }) => ({
         id: sessionID,
         directory: '/projects/buddy',
@@ -94,13 +93,20 @@ test('OpenCode V2 plugin subscribes to V2 events and cleans up its subscription'
   await new Promise((resolve) => setImmediate(resolve))
   publish({
     id: 'event-1',
-    type: 'session.status',
-    data: { sessionID: 'session-1', status: { type: 'busy' } },
+    type: 'session.step.started',
+    data: { sessionID: 'session-1', assistantMessageID: 'message-1' },
   })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(observations[0].sessionId, 'session-1')
-  assert.equal(observations[0].status, 'busy')
+  assert.equal(observations[0].event, 'session.step.started')
   assert.equal(observations[0].cwd, '/projects/buddy')
+  publish({
+    id: 'event-2',
+    type: 'session.idle',
+    data: { sessionID: 'session-1' },
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(observations[1].event, 'session.idle')
   cleanup()
   wake()
   await new Promise((resolve) => setImmediate(resolve))

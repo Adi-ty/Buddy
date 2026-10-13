@@ -11,6 +11,12 @@ const watched = new Set([
   'session.updated',
   'session.deleted',
   'session.status',
+  'session.step.started',
+  'session.step.ended',
+  'session.tool.called',
+  'session.tool.progress',
+  'session.tool.success',
+  'session.tool.error',
   'session.idle',
   'session.error',
   'permission.asked',
@@ -58,8 +64,7 @@ export default Plugin.define({
           ...(typeof info.title === 'string' ? { title: info.title } : {}),
         })
       }
-      if (!['session.created', 'session.updated', 'session.deleted'].includes(type))
-        active.add(sessionId)
+      if (!known.has(sessionId)) known.set(sessionId, { cwd: ctx.location.directory })
       const context = known.get(sessionId) ?? { cwd: ctx.location.directory }
       lastStamp = Math.max(Date.now(), lastStamp + 0.01)
       void report(configPath, {
@@ -277,10 +282,17 @@ export default Plugin.define({
       }
       recovering = true
       try {
-        const activeResponse =
-          typeof ctx.session.active === 'function' ? valueOf(await ctx.session.active()) : {}
-        const statuses = activeResponse && typeof activeResponse === 'object' ? activeResponse : {}
-        const live = new Set(Object.keys(statuses))
+        let live = new Set(active)
+        if (typeof ctx.session.active === 'function') {
+          try {
+            const activeResponse = valueOf(await ctx.session.active())
+            const statuses =
+              activeResponse && typeof activeResponse === 'object' ? activeResponse : {}
+            live = new Set(Object.keys(statuses))
+          } catch {
+            // Some V2 plugin contexts omit the active-session endpoint.
+          }
+        }
         for (const id of live) {
           if (!known.has(id) && typeof ctx.session.get === 'function') {
             try {
@@ -298,7 +310,10 @@ export default Plugin.define({
           send('buddy.reconcile', { sessionID: id, status: { type: 'busy' } })
         }
         for (const id of active)
-          if (!live.has(id)) send('buddy.reconcile', { sessionID: id, status: { type: 'idle' } })
+          if (!live.has(id)) {
+            send('buddy.reconcile', { sessionID: id, status: { type: 'idle' } })
+            active.delete(id)
+          }
 
         if (controlEnabled) {
           const requests = []
@@ -357,6 +372,26 @@ export default Plugin.define({
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           if (disposed || !watched.has(event.type)) continue
           const properties = event.properties ?? event.data ?? {}
+          const sessionId = properties.sessionID ?? properties.info?.id
+          if (typeof sessionId === 'string') {
+            if (
+              [
+                'session.step.started',
+                'session.step.ended',
+                'session.tool.called',
+                'session.tool.progress',
+                'session.tool.success',
+                'session.tool.error',
+              ].includes(event.type)
+            )
+              active.add(sessionId)
+            else if (event.type === 'session.status') {
+              const status = properties.status?.type ?? properties.status
+              if (['busy', 'running', 'retry'].includes(status)) active.add(sessionId)
+              else if (status === 'idle') active.delete(sessionId)
+            } else if (event.type === 'session.idle' || event.type === 'session.deleted')
+              active.delete(sessionId)
+          }
           send(event.type, properties, event.id)
           if (['permission.asked', 'permission.v2.asked'].includes(event.type))
             publishRequest(properties, 'permission')
