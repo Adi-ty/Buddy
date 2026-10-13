@@ -10,6 +10,7 @@ import {
 } from './display-geometry'
 import { COMPLETION_NOTICE_MS, notchRecords } from '../shared/sessions'
 import { runTask } from './tasks'
+import { compactNotchBounds } from '../shared/overlay-layout'
 
 interface OverlayHost {
   getState(): OverlayState
@@ -34,8 +35,6 @@ export class OverlayController {
   private sessions: readonly SessionRecord[] = []
   private context: readonly SessionRecord[] = []
   private displayedIds = new Set<string>()
-  private hoveringAt: number | null = null
-  private hoverSuppressed = false
   private inputActive = false
   private completionTimer: ReturnType<typeof setTimeout> | null = null
   private readonly onDisplayChange = (): void => this.invalidate()
@@ -66,7 +65,7 @@ export class OverlayController {
       this.hide()
       this.update({
         geometry: 'unavailable',
-        message: 'The notch could not update. Retry placement in Settings.',
+        message: 'The notch could not update. Refresh display placement from Buddy’s menu.',
       })
     })
   }
@@ -165,8 +164,6 @@ export class OverlayController {
         notchRecords(this.sessions, Date.now(), this.context).map((item) => item.id),
       )
     this.leavingAt = null
-    this.hoveringAt = null
-    this.hoverSuppressed = !expanded
     this.apply()
   }
 
@@ -306,9 +303,14 @@ export class OverlayController {
         if (isMainFrame && code !== -3 && !window.isDestroyed()) rendererFailed()
       })
     }
+    const wings = !state.expanded && compactNotchBounds(anchor)
+    this.window.setAlwaysOnTop(true, wings ? 'status' : 'floating')
     this.window.setBounds(bounds, false)
+    if (this.ready && safeActualBounds(anchor, this.window.getBounds(), state.expanded))
+      this.window.showInactive()
+    // AppKit may constrain the frame when the previously hidden window is shown.
     const actual = this.window.getBounds()
-    if (!safeActualBounds(anchor, actual)) {
+    if (!safeActualBounds(anchor, actual, state.expanded)) {
       this.hide()
       this.update({
         anchorId: anchor.id,
@@ -317,7 +319,6 @@ export class OverlayController {
       return
     }
     this.window.setIgnoreMouseEvents(false)
-    if (this.ready) this.window.showInactive()
     this.update({
       anchorId: anchor.id,
       actualBounds: actual,
@@ -337,12 +338,8 @@ export class OverlayController {
     const inside = this.pointerInside()
     if (!state.expanded) {
       if (!inside) {
-        this.hoveringAt = null
-        this.hoverSuppressed = false
         if (state.completionHoldIds?.length) this.setLiveSessions(this.sessions, this.context)
-      } else if (this.hoverSuppressed) return
-      else if (this.hoveringAt === null) this.hoveringAt = Date.now()
-      else if (Date.now() - this.hoveringAt > 350) this.expand(true)
+      }
       return
     }
     if (inside || this.inputActive) this.leavingAt = null
@@ -354,6 +351,17 @@ export class OverlayController {
     if (!this.window || this.window.isDestroyed()) return false
     const bounds = this.window.getBounds()
     const point = screen.getCursorScreenPoint()
+    const state = this.host.getState()
+    const camera = state.displays.find((display) => display.id === state.anchorId)?.camera
+    if (
+      !state.expanded &&
+      camera &&
+      point.x >= camera.x &&
+      point.x < camera.x + camera.width &&
+      point.y >= camera.y &&
+      point.y < camera.y + camera.height
+    )
+      return false
     return (
       point.x >= bounds.x &&
       point.x < bounds.x + bounds.width &&
@@ -367,7 +375,6 @@ export class OverlayController {
     if (this.polling) clearInterval(this.polling)
     this.polling = null
     this.leavingAt = null
-    this.hoveringAt = null
     this.displayedIds.clear()
     if (this.window && !this.window.isDestroyed()) {
       this.window.setIgnoreMouseEvents(true, { forward: true })

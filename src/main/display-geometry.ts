@@ -1,5 +1,6 @@
 import type { Display } from 'electron'
 import type { OverlayDisplay, Rect } from '../shared/contracts'
+import { compactNotchBounds, matchesBounds } from '../shared/overlay-layout'
 
 interface NativeDisplay {
   id: number
@@ -152,8 +153,10 @@ export function matchDisplays(native: NativeDisplay[], electron: Display[]): Ove
 }
 
 export function shelfBounds(display: OverlayDisplay, expanded: boolean): Rect | null {
+  const notch = !expanded && compactNotchBounds(display)
+  if (notch) return notch
   const width = Math.min(expanded ? 440 : 320, display.workArea.width - 24)
-  const height = expanded ? 440 : 60
+  const height = expanded ? 440 : 40
   const y = Math.ceil(Math.max(display.bounds.y + display.safeTop, display.workArea.y) + 6)
   if (width < 280 || y + height > display.workArea.y + display.workArea.height - 6) return null
   const center = display.camera
@@ -172,7 +175,9 @@ export function shelfBounds(display: OverlayDisplay, expanded: boolean): Rect | 
   }
 }
 
-export function safeActualBounds(display: OverlayDisplay, actual: Rect): boolean {
+export function safeActualBounds(display: OverlayDisplay, actual: Rect, expanded = true): boolean {
+  const notch = !expanded && compactNotchBounds(display)
+  if (notch) return matchesBounds(notch, actual)
   return (
     contains(display.workArea, actual) &&
     actual.y >= display.bounds.y + display.safeTop &&

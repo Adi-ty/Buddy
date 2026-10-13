@@ -67,6 +67,7 @@ test(
     window.emit('ready-to-show')
     screen.cursor = { x: window.bounds.x + 10, y: window.bounds.y + 10 }
     controller.expand(true)
+    screen.cursor = { x: window.bounds.x + 10, y: window.bounds.y + 10 }
     t.mock.timers.tick(12_001)
     assert.equal(state.visible, true)
     assert.equal(state.expanded, true)
@@ -82,6 +83,7 @@ test(
     controller.setLiveSessions([done()])
     screen.cursor = { x: window.bounds.x + 10, y: window.bounds.y + 10 }
     controller.expand(true)
+    screen.cursor = { x: window.bounds.x + 10, y: window.bounds.y + 10 }
     t.mock.timers.tick(12_001)
     controller.expand(false)
     assert.equal(state.visible, false)
@@ -151,9 +153,13 @@ test(
     window.emit('ready-to-show')
     assert.equal(state.visible, true)
     assert.equal(window.ignored, false, 'Notch must accept clicks')
+    assert.equal(window.level, 'status', 'Compact wings sit at menu-bar level')
+    assert.equal(window.bounds.y, 0)
+    assert.equal(window.bounds.width, 320)
     controller.expand(true)
     assert.equal(state.expanded, true)
     assert.equal(window.bounds.height, 440)
+    assert.equal(window.level, 'floating', 'Expanded content does not cover menu-bar menus')
     controller.expand(false)
     screen.cursor = { x: window.bounds.x + 10, y: window.bounds.y + 10 }
     advance(800)
@@ -162,10 +168,19 @@ test(
     advance(250)
     screen.cursor = { x: window.bounds.x + 10, y: window.bounds.y + 10 }
     advance(850)
-    assert.equal(state.expanded, true, 'Hover expands after reentering')
+    assert.equal(state.expanded, false, 'Hover never expands; opening requires a click')
+    controller.expand(true)
     screen.cursor = { x: 0, y: 0 }
     advance(1650)
     assert.equal(state.expanded, false, 'Leaving dismisses the expanded notch')
+    const getBounds = window.getBounds.bind(window)
+    window.getBounds = () => ({ ...getBounds(), y: 38 })
+    controller.expand(false)
+    assert.equal(state.visible, false, 'A clamped frame must not show misaligned camera wings')
+    assert.equal(window.ignored, true)
+    window.getBounds = getBounds
+    controller.expand(false)
+    assert.equal(state.visible, true)
     window.webContents.emit('render-process-gone')
     assert.equal(state.visible, false)
     advance(2100)

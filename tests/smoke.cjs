@@ -203,7 +203,22 @@ async function verify() {
   const bounds = overlay.getBounds()
   const placement = (await snapshot(dashboard)).overlay
   const display = placement.displays.find((item) => item.id === placement.anchorId)
-  assert(bounds.y >= Math.max(display.bounds.y + display.safeTop, display.workArea.y))
+  const wings = await js(overlay, 'Boolean(document.querySelector(".overlay-wings"))')
+  if (wings) {
+    assert.equal(bounds.y, display.camera.y)
+    assert(bounds.height <= display.camera.height)
+    assert(bounds.width <= 320)
+    const regions = await js(
+      overlay,
+      `Array.from(document.querySelectorAll('.overlay-wing')).map((el) => {
+      const r = el.getBoundingClientRect(); return { x: r.x, right: r.right };
+    })`,
+    )
+    assert(bounds.x + regions[0].right <= display.camera.x)
+    assert(bounds.x + regions[1].x >= display.camera.x + display.camera.width)
+  } else {
+    assert(bounds.y >= Math.max(display.bounds.y + display.safeTop, display.workArea.y))
+  }
   assert(
     bounds.x >= display.workArea.x &&
       bounds.x + bounds.width <= display.workArea.x + display.workArea.width,
@@ -422,26 +437,7 @@ async function verify() {
     await js(dashboard, `document.querySelectorAll('input[type=checkbox]')[1].disabled`),
     'Login preference explains unavailable development support',
   )
-  const displays = (await snapshot(dashboard)).overlay.displays
-  if (displays.length > 1) {
-    await select(dashboard, 'Notch display', String(displays[0].id))
-    await until(
-      async () => (await snapshot(dashboard)).overlay.displayId === displays[0].id,
-      'choose notch display',
-    )
-    await select(dashboard, 'Notch display', 'auto')
-    await until(
-      async () => (await snapshot(dashboard)).overlay.displayId === null,
-      'automatic notch display',
-    )
-  } else {
-    assert.equal(
-      await js(dashboard, 'document.querySelector(\'[aria-label="Notch display"]\') === null'),
-      true,
-      'Single display has no redundant picker',
-    )
-    assert(await js(dashboard, 'document.body.textContent.includes("Only connected display")'))
-  }
+  assert(await js(dashboard, '!document.body.textContent.includes("Notch placement")'))
   await js(dashboard, 'window.buddy.refreshDisplays()')
   await until(
     async () => (await snapshot(dashboard)).overlay.geometry === 'ready',

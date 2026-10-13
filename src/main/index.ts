@@ -225,6 +225,9 @@ function createOverlayWindow(): BrowserWindow {
     height: 60,
     show: false,
     frame: false,
+    // Electron's frameless macOS window can then occupy the auxiliary regions.
+    // Geometry is still validated against the native display before showing it.
+    enableLargerThanScreen: true,
     transparent: true,
     backgroundColor: '#00000000',
     type: 'panel',

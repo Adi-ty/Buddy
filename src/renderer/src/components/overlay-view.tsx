@@ -21,6 +21,7 @@ import { familyInputSession, sessionFamilies } from '@shared/session-families'
 import { SubagentList } from './subagent-list'
 import type { BuddySnapshot } from '@shared/contracts'
 import { SessionRequests } from './session-requests'
+import { compactNotchBounds, matchesBounds } from '@shared/overlay-layout'
 
 export function OverlayView() {
   const { snapshot, failed } = useBuddySnapshot()
@@ -28,12 +29,16 @@ export function OverlayView() {
     document.documentElement.classList.add('overlay-window')
     return () => document.documentElement.classList.remove('overlay-window')
   }, [])
-  return failed ? (
-    <div className="overlay-surface p-3 text-xs" role="alert">
-      The notch couldn’t reconnect. Open Buddy from its menu to retry.
-    </div>
-  ) : snapshot ? (
+  return snapshot ? (
     <OverlaySessions snapshot={snapshot} />
+  ) : failed ? (
+    <div
+      className="overlay-surface justify-center px-3 text-[10px]"
+      role="alert"
+      title="The notch couldn’t reconnect. Open Buddy from its menu to retry."
+    >
+      Offline
+    </div>
   ) : null
 }
 
@@ -110,14 +115,61 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
         : signal === 'success'
           ? 'text-success'
           : 'text-muted-foreground'
+  const display = snapshot.overlay.displays?.find((item) => item.id === snapshot.overlay.anchorId)
+  const proposedWings = !expanded && display && compactNotchBounds(display)
+  // Renderer HMR can run ahead of the main process, and native moves can be
+  // constrained. Never draw a camera gap using intended placement alone.
+  const wings =
+    proposedWings && matchesBounds(proposedWings, snapshot.overlay.actualBounds)
+      ? proposedWings
+      : null
+  const label = `${sessions.length} sessions · ${summary}. Click to open sessions.`
+  const avatars = (
+    <span className="flex items-center -space-x-3" aria-hidden="true">
+      {sessions.slice(0, 2).map((session) => (
+        <span key={session.id} className="relative rounded-lg bg-background ring-1 ring-background">
+          <SessionAvatar
+            avatar={session}
+            harness={harnessFor(snapshot, session.harness)}
+            className={wings ? 'size-6' : 'size-7'}
+            notchBadge
+          />
+        </span>
+      ))}
+    </span>
+  )
+  const shortStatus = attention.length
+    ? `${attention.length} waiting`
+    : errors
+      ? `${errors} error`
+      : working
+        ? `${working} busy`
+        : finished
+          ? 'Done'
+          : 'Quiet'
+  const compactStatus = (
+    <span className={cn('min-w-0 text-center', signalColor)}>
+      <span className="block text-[11px] font-medium leading-4">
+        {sessions.length > 2 ? `+${sessions.length - 2}` : `${sessions.length} live`}
+      </span>
+      <span className="block truncate text-[9px] leading-3">{shortStatus}</span>
+    </span>
+  )
   return (
     <SignalBoundary
       signal={signal}
       revision={signalRevision(sessions, signal, now)}
-      className="overlay-surface"
+      className={cn('overlay-surface', wings && 'overlay-wings')}
+      style={
+        wings && display?.camera
+          ? {
+              gridTemplateColumns: `${display.camera.x - wings.x}px ${display.camera.width}px minmax(0, 1fr)`,
+            }
+          : undefined
+      }
     >
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {summary}
+        {sessions.length} sessions · {summary}
       </span>
       {expanded ? (
         <>
@@ -211,55 +263,42 @@ export function OverlaySessions({ snapshot }: { snapshot: BuddySnapshot }) {
             </Button>
           </footer>
         </>
+      ) : wings ? (
+        <>
+          <button
+            className="overlay-compact overlay-wing overlay-wing-left"
+            onClick={() => invoke(window.buddy.setOverlayExpanded(true))}
+            aria-label={label}
+            title={label}
+            aria-expanded={false}
+          >
+            {avatars}
+          </button>
+          <button
+            className="overlay-compact overlay-wing overlay-wing-right"
+            onClick={() => invoke(window.buddy.setOverlayExpanded(true))}
+            aria-label={
+              attention.length ? `Review ${attention.length} sessions needing attention` : label
+            }
+            title={label}
+            aria-expanded={false}
+          >
+            {compactStatus}
+          </button>
+        </>
       ) : (
         <button
           className="overlay-compact"
           onClick={() => invoke(window.buddy.setOverlayExpanded(true))}
-          aria-label={`Expand ${sessions.length} sessions${attention.length ? `, ${attention.length} need attention` : ''}`}
+          aria-label={label}
+          title={label}
           aria-expanded={false}
         >
-          <span className="flex items-center -space-x-1.5">
-            {sessions.slice(0, 5).map((session) => (
-              <span
-                key={session.id}
-                className="relative rounded-lg bg-background ring-2 ring-background"
-                title={session.name}
-                role="img"
-                aria-label={`${session.name} · ${session.project}`}
-              >
-                <SessionAvatar
-                  avatar={session}
-                  harness={harnessFor(snapshot, session.harness)}
-                  className="size-8"
-                  compactBadge
-                />
-                {sessionNotification(session, now) && (
-                  <span
-                    className={`avatar-signal avatar-signal-${sessionNotification(session, now)}`}
-                    aria-hidden="true"
-                  >
-                    {session.status === 'completed' ? '✓' : '!'}
-                  </span>
-                )}
-              </span>
-            ))}
-            {sessions.length > 5 && (
-              <span className="pl-3 text-xs text-muted-foreground">+{sessions.length - 5}</span>
-            )}
-          </span>
-          <span className="ml-auto min-w-0 text-right text-[11px]">
-            <span
-              className={cn('block truncate font-medium', signalColor)}
-              title={families[0]!.root.name}
-            >
-              {families[0]!.root.name}
-            </span>
-            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-              {harnessFor(snapshot, families[0]!.root.harness).name} ·{' '}
-              {sessions.length > 1 ? `${sessions.length} sessions · ` : ''}
-              {summary}
-            </span>
-          </span>
+          {avatars}
+          {sessions.length > 2 && (
+            <span className="text-xs text-muted-foreground">+{sessions.length - 2}</span>
+          )}
+          <span className={cn('ml-auto text-xs', signalColor)}>{summary}</span>
           <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
         </button>
       )}

@@ -3,7 +3,6 @@ export { RequestPanel } from '../src/renderer/src/components/request-panel'
 export { SessionRequests } from '../src/renderer/src/components/session-requests'
 export { familyInputSession, sessionFamilies } from '../src/shared/session-families'
 export { SessionRow } from '../src/renderer/src/components/session-row'
-export { NotchSettings } from '../src/renderer/src/components/notch-settings'
 export { SessionList } from '../src/renderer/src/components/session-list'
 export { setSessionFilters } from '../src/renderer/src/lib/session-filters'
 

@@ -31,6 +31,9 @@ export class BrowserWindow extends EventEmitter {
   isDestroyed() {
     return this.destroyed
   }
+  setAlwaysOnTop(value, level) {
+    this.level = level
+  }
   setBounds(bounds) {
     this.bounds = bounds
   }

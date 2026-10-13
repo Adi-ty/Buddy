@@ -137,6 +137,38 @@
     height: 100%;
     padding: 0 14px;
   }
+  .overlay-wings {
+    display: grid;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    pointer-events: none;
+  }
+  .overlay-wings > .signal-trace {
+    display: none;
+  }
+  .overlay-wing {
+    justify-content: center;
+    padding: 0 3px;
+    background: #111210;
+    border: 1px solid var(--signal-color, #454744);
+    border-top: 0;
+    pointer-events: auto;
+    overflow: hidden;
+  }
+  .overlay-wing-left {
+    grid-column: 1;
+    border-right: 0;
+    border-radius: 0 0 0 12px;
+  }
+  .overlay-wing-right {
+    grid-column: 3;
+    border-left: 0;
+    border-radius: 0 0 12px 0;
+  }
+  .overlay-wing:hover {
+    background: #22241f;
+  }
   .signal-boundary {
     position: relative;
     isolation: isolate;

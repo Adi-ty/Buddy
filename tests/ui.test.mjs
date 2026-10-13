@@ -6,7 +6,6 @@ import { loadSource } from './load-source.mjs'
 const {
   IntegrationsPage,
   SessionRow,
-  NotchSettings,
   SessionList,
   setSessionFilters,
   OverlaySessions,
@@ -195,32 +194,6 @@ test('session name is primary and subtitle identifies the harness without repeat
   assert(!html.includes('Codex · buddy'))
 })
 
-test('display controls reflect actual choices instead of duplicating the only connected display', () => {
-  const display = { id: 1, name: 'Built-in Retina Display', builtIn: true, camera: {} }
-  const overlay = {
-    displays: [display],
-    anchorId: 1,
-    displayId: null,
-    visible: true,
-    geometry: 'ready',
-  }
-  let html = renderToStaticMarkup(createElement(NotchSettings, { snapshot: { overlay } }))
-  assert(html.includes('Only connected display'))
-  assert(!html.includes('Notch display'))
-  html = renderToStaticMarkup(
-    createElement(NotchSettings, {
-      snapshot: { overlay: { ...overlay, displays: [display, { id: 2, name: 'Studio Display' }] } },
-    }),
-  )
-  assert(html.includes('Notch display'))
-  assert(html.includes('Automatic placement'))
-  assert(html.includes('Studio Display'))
-  html = renderToStaticMarkup(
-    createElement(NotchSettings, { snapshot: { overlay: { ...overlay, displayId: 1 } } }),
-  )
-  assert(html.includes('Use automatic placement'))
-})
-
 test('unverified installs are explicit and missing preview metadata does not crash integrations', () => {
   const html = renderToStaticMarkup(
     createElement(IntegrationsPage, {
@@ -348,7 +321,7 @@ test('a parent family is one dashboard entry, with child details and an honest a
   assert(html.includes('Includes subagent activity'))
 })
 
-test('notch shows parent titles and harness labels, and counts families rather than individual agents', () => {
+test('collapsed notch summarizes families; names and harnesses remain in expanded details', () => {
   const parent = {
     id: 'opencode:root',
     harness: 'opencode',
@@ -379,16 +352,78 @@ test('notch shows parent titles and harness labels, and counts families rather t
     overlay: { expanded: false },
   }
   const html = renderToStaticMarkup(createElement(OverlaySessions, { snapshot: current }))
-  assert(html.includes('title="Fix session counting"'))
-  assert(html.includes('OpenCode ·'))
+  assert(!html.includes('Fix session counting'))
   assert(html.includes('1 waiting for you'))
-  assert(html.includes('Expand 1 sessions, 1 need attention'))
+  assert(html.includes('1 sessions · 1 waiting for you. Click to open sessions.'))
   assert(!html.includes('Audit the count'))
   const expanded = renderToStaticMarkup(
     createElement(OverlaySessions, { snapshot: { ...current, overlay: { expanded: true } } }),
   )
+  assert(expanded.includes('Fix session counting'))
+  assert(expanded.includes('OpenCode'))
   assert(expanded.includes('1 session · 1 subagent'))
   assert(expanded.includes('+1 subagent'))
+})
+
+test('compact wings limit avatars to two and expose overflow without putting a button over the camera', () => {
+  const sessions = Array.from({ length: 8 }, (_, index) => ({
+    id: `codex:${index}`,
+    harness: 'codex',
+    name: `Task ${index}`,
+    parentId: null,
+    ordinal: index,
+    status: 'working',
+    presence: 'observed',
+    lastSeen: Date.now(),
+    statusChangedAt: Date.now(),
+    attention: [],
+    dataUri: snapshot.avatarPreviews[0].dataUri,
+  }))
+  const display = {
+    id: 1,
+    camera: { x: 650, y: 0, width: 212, height: 38 },
+    auxiliaryLeft: { x: 0, y: 0, width: 650, height: 38 },
+    auxiliaryRight: { x: 862, y: 0, width: 650, height: 38 },
+  }
+  const current = {
+    ...snapshot,
+    sessions,
+    history: [],
+    overlay: {
+      expanded: false,
+      anchorId: 1,
+      actualBounds: { x: 596, y: 0, width: 320, height: 38 },
+      displays: [display],
+    },
+  }
+  const html = renderToStaticMarkup(createElement(OverlaySessions, { snapshot: current }))
+  assert.equal((html.match(/<img /g) ?? []).length, 2)
+  assert.equal((html.match(/<button /g) ?? []).length, 2)
+  assert(html.includes('grid-template-columns:54px 212px minmax(0, 1fr)'))
+  assert(html.includes('+6'))
+  assert(html.includes('8 busy'))
+  assert(html.includes('8 sessions'))
+  assert(!html.includes('Task 0'))
+  for (const actualBounds of [null, { x: 596, y: 44, width: 320, height: 60 }]) {
+    const stale = renderToStaticMarkup(
+      createElement(OverlaySessions, {
+        snapshot: { ...current, overlay: { ...current.overlay, actualBounds } },
+      }),
+    )
+    assert(
+      !stale.includes('overlay-wings'),
+      'Missing or old below-menu placement never draws a camera gap',
+    )
+    assert(!stale.includes('grid-template-columns'))
+    assert.equal((stale.match(/<button /g) ?? []).length, 1)
+  }
+  const expanded = renderToStaticMarkup(
+    createElement(OverlaySessions, {
+      snapshot: { ...current, overlay: { ...current.overlay, expanded: true } },
+    }),
+  )
+  assert.equal((expanded.match(/class="session-row"/g) ?? []).length, 8)
+  assert(expanded.includes('Task 7'))
 })
 
 test('the renderer keeps only completion rows held by main while hovering', () => {

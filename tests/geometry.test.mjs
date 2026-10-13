@@ -25,20 +25,35 @@ const electron = {
 }
 const parse = (displays, version = 1) => parseNativeDisplays(JSON.stringify({ version, displays }))
 
-test('Retina geometry uses logical points and keeps both compact and expanded overlays clear of the camera and menu bar', () => {
+test('compact wings fit beside the camera within 320 points; expanded content stays below the menu', () => {
   const [display] = matchDisplays(parse([native]), [electron])
   assert.equal(display.uuid, native.uuid)
   assert.deepEqual(display.camera, { x: 650, y: 0, width: 212, height: 38 })
   assert.deepEqual(display.auxiliaryLeft, { x: 0, y: 0, width: 650, height: 38 })
-  for (const expanded of [false, true]) {
-    const bounds = shelfBounds(display, expanded)
-    assert(bounds)
-    assert.equal(bounds.x + bounds.width / 2, 756)
-    assert(bounds.y >= electron.workArea.y)
-    assert(safeActualBounds(display, bounds))
-    assert(!safeActualBounds(display, { ...bounds, y: 0 }))
-    assert(!safeActualBounds(display, { ...bounds, x: -100 }))
-  }
+  const compact = shelfBounds(display, false)
+  assert.deepEqual(compact, { x: 596, y: 0, width: 320, height: 38 })
+  assert(safeActualBounds(display, compact, false))
+  assert(!safeActualBounds(display, { ...compact, y: 38 }, false), 'Reject OS-clamped placement')
+  assert(
+    !safeActualBounds(display, { ...compact, x: compact.x + 2 }, false),
+    'Reject misaligned camera gap',
+  )
+  const expanded = shelfBounds(display, true)
+  assert.equal(expanded.x + expanded.width / 2, 756)
+  assert(expanded.y >= electron.workArea.y)
+  assert(safeActualBounds(display, expanded, true))
+  assert(!safeActualBounds(display, { ...expanded, y: 0 }, true))
+  assert(!safeActualBounds(display, { ...expanded, x: -100 }, true))
+})
+
+test('a camera too wide for two useful wings uses a compact below-menu fallback', () => {
+  const [display] = matchDisplays(parse([native]), [electron])
+  const wide = { ...display, camera: { ...display.camera, width: 250 } }
+  const compact = shelfBounds(wide, false)
+  assert.equal(compact.width, 320)
+  assert.equal(compact.height, 40)
+  assert(compact.y >= electron.workArea.y)
+  assert(safeActualBounds(wide, compact, false))
 })
 
 test('native Y conversion follows display identity across negative origins and different desktop arrangements', () => {
@@ -58,6 +73,10 @@ test('native Y conversion follows display identity across negative origins and d
   assert.deepEqual(display.camera, { x: -862, y: -982, width: 212, height: 38 })
   assert.deepEqual(display.auxiliaryRight, { x: -650, y: -982, width: 650, height: 38 })
   assert(safeActualBounds(display, shelfBounds(display, true)))
+  const compact = shelfBounds(display, false)
+  assert.equal(compact.y, -982)
+  assert.equal(compact.x + compact.width / 2, -756)
+  assert(safeActualBounds(display, compact, false))
 })
 
 test('screens without a notch use the work area; cramped displays decline an unsafe overlay', () => {

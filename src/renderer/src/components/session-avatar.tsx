@@ -10,11 +10,13 @@ export function SessionAvatar({
   harness,
   className,
   compactBadge = false,
+  notchBadge = false,
 }: {
   avatar: AvatarPreview & { id?: string }
   harness: HarnessCatalogEntry
   className?: string
   compactBadge?: boolean
+  notchBadge?: boolean
 }) {
   const [loaded, setLoaded] = useState<{ id: string; uri: string } | null>(null)
   const id = avatar.id
@@ -60,9 +62,11 @@ export function SessionAvatar({
       <span
         className={cn(
           'absolute flex items-center justify-center border-background bg-foreground font-mono font-semibold text-background',
-          compactBadge
-            ? '-right-1 -bottom-1 size-4 rounded-md border text-[7px]'
-            : '-right-2 -bottom-2 h-6 min-w-7 rounded-lg border-2 px-1 text-[10px]',
+          notchBadge
+            ? 'bottom-0 left-0 h-2.5 w-3 rounded-sm border text-[5px]'
+            : compactBadge
+              ? '-right-1 -bottom-1 size-4 rounded-md border text-[7px]'
+              : '-right-2 -bottom-2 h-6 min-w-7 rounded-lg border-2 px-1 text-[10px]',
         )}
         role="img"
         aria-label={`${harness.name} harness`}

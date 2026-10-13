@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import type { BuddySnapshot } from '@shared/contracts'
-import { NotchSettings } from './notch-settings'
 import { PageHeading } from './ui/page-heading'
 import { Notice } from './ui/notice'
 import { useNotice } from '@/lib/use-notice'
@@ -24,7 +23,7 @@ export function SettingsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   }
   return (
     <>
-      <PageHeading title="Settings" subtitle="Choose how Buddy appears and notifies you." />
+      <PageHeading title="Settings" subtitle="Choose when Buddy starts and notifies you." />
       <section
         className="space-y-5 rounded-2xl border border-border bg-card p-5"
         aria-label="App preferences"
@@ -61,7 +60,6 @@ export function SettingsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         </label>
         <Notice message={notice} />
       </section>
-      <NotchSettings snapshot={snapshot} />
     </>
   )
 }
