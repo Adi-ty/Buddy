@@ -44,16 +44,8 @@ export interface Rect {
 
 export interface OverlayDisplay {
   id: number
-  uuid: string | null
-  name: string
-  builtIn: boolean
   bounds: Rect
   workArea: Rect
-  scaleFactor: number
-  safeTop: number
-  camera: Rect | null
-  auxiliaryLeft: Rect | null
-  auxiliaryRight: Rect | null
 }
 
 export interface OverlayState {

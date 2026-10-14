@@ -4,13 +4,12 @@ directories:
   output: dist
   buildResources: build
 files:
-  - out/**/*
-  - '!out/native/**'
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
   - package.json
   - '!docs/**'
 extraResources:
-  - from: out/native/buddy-display
-    to: native/buddy-display
   - from: integrations
     to: integrations
   - from: resources/buddy-brand.png
@@ -30,8 +29,6 @@ mac:
     - dmg
     - zip
   hardenedRuntime: true
-  binaries:
-    - Contents/Resources/native/buddy-display
   artifactName: '${productName}-${version}-${arch}.${ext}'
 dmg:
   title: Buddy

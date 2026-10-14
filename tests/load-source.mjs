@@ -23,7 +23,7 @@ export async function loadSource(entry, mocks = {}) {
         {
           name: 'test-mocks',
           setup(build) {
-            build.onResolve({ filter: /^(electron|node:child_process)$/ }, ({ path }) =>
+            build.onResolve({ filter: /^electron$/ }, ({ path }) =>
               mocks[path] ? { path: resolve(mocks[path]) } : null,
             )
           },

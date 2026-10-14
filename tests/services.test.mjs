@@ -138,11 +138,20 @@ test('companion position persists independently and invalid positions fall back 
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const path = join(directory, 'settings.json')
   const settings = new ProfileSettings(path)
-  const position = { displayId: 2, displayUuid: 'external', x: 0.25, y: 1 }
+  const position = { displayId: 2, x: 0.25, y: 1 }
   settings.setDesktopNotifications(false)
   settings.setCompanionPosition(position)
   const restored = new ProfileSettings(path)
   assert.deepEqual(restored.companionPosition, position)
+  writeFileSync(
+    path,
+    JSON.stringify({ companionPosition: { ...position, displayUuid: 'legacy-uuid' } }),
+  )
+  assert.deepEqual(
+    new ProfileSettings(path).companionPosition,
+    position,
+    'Legacy UUID settings retain the numeric ID and position',
+  )
   assert.equal(restored.desktopNotifications, false)
   restored.setCompanionPosition(null)
   assert.equal(new ProfileSettings(path).companionPosition, null)
