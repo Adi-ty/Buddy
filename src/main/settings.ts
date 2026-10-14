@@ -22,7 +22,11 @@ export class ProfileSettings {
   }
   get companionPosition(): CompanionPosition | null {
     return isCompanionPosition(this.data.companionPosition)
-      ? { ...this.data.companionPosition }
+      ? {
+          displayId: this.data.companionPosition.displayId,
+          x: this.data.companionPosition.x,
+          y: this.data.companionPosition.y,
+        }
       : null
   }
   setCompanionPosition(position: CompanionPosition | null): void {

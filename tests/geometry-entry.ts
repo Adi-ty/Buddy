@@ -1,4 +1,4 @@
-export { parseNativeDisplays, matchDisplays, safeActualBounds } from '../src/main/display-geometry'
+export { mapDisplays, safeActualBounds } from '../src/main/display-geometry'
 
 export {
   companionBounds,

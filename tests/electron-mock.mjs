@@ -7,10 +7,9 @@ screen.getAllDisplays = () => [
     id: 1,
     bounds: { x: 0, y: 0, width: 1512, height: 982 },
     workArea: { x: 0, y: 38, width: 1512, height: 920 },
-    scaleFactor: 2,
-    rotation: 0,
   },
 ]
+screen.getPrimaryDisplay = () => screen.getAllDisplays()[0]
 screen.getDisplayMatching = (bounds) => {
   const area = (display) =>
     Math.max(
