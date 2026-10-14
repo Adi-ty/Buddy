@@ -541,22 +541,19 @@ if (!app.requestSingleInstanceLock()) {
         if (args.length !== 0) throw new Error('Invalid snapshot request')
         return snapshot
       })
-      overlay = new OverlayController(
-        {
-          getState: () => snapshot.overlay,
-          publish: (state) => {
-            snapshot = { ...snapshot, overlay: state }
-            broadcast()
-          },
-          createWindow: createOverlayWindow,
-          openDashboard: () => createDashboard('/sessions'),
-          loadPosition: () => settings?.companionPosition ?? null,
-          savePosition: (position) => {
-            settings?.setCompanionPosition(position)
-          },
+      overlay = new OverlayController({
+        getState: () => snapshot.overlay,
+        publish: (state) => {
+          snapshot = { ...snapshot, overlay: state }
+          broadcast()
         },
-        mainDirectory,
-      )
+        createWindow: createOverlayWindow,
+        openDashboard: () => createDashboard('/sessions'),
+        loadPosition: () => settings?.companionPosition ?? null,
+        savePosition: (position) => {
+          settings?.setCompanionPosition(position)
+        },
+      })
       ipcMain.handle(IPC.moveCompanion, (event, ...args: unknown[]) => {
         trustedRequest(event)
         if (

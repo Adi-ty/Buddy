@@ -1,10 +1,8 @@
-import { execFile } from 'node:child_process'
-import { join } from 'node:path'
-import { app, BrowserWindow, globalShortcut, powerMonitor, screen } from 'electron'
+import { BrowserWindow, globalShortcut, powerMonitor, screen } from 'electron'
 import type { OverlayState, Rect, SessionRecord } from '../shared/contracts'
 import type { CompanionMove, CompanionPosition } from '../shared/companion'
 import { companionBounds, companionDisplay, companionPosition } from './companion-placement'
-import { matchDisplays, parseNativeDisplays, safeActualBounds } from './display-geometry'
+import { mapDisplays, safeActualBounds } from './display-geometry'
 import { COMPLETION_NOTICE_MS, companionRecords } from '../shared/sessions'
 import { runTask } from './tasks'
 
@@ -22,12 +20,10 @@ export class OverlayController {
   private ready = false
   private suspended = false
   private disposed = false
-  private generation = 0
   private failures = 0
   private rendererFailures = 0
   private debounce: ReturnType<typeof setTimeout> | null = null
   private retry: ReturnType<typeof setTimeout> | null = null
-  private probe: AbortController | null = null
   private polling: ReturnType<typeof setInterval> | null = null
   private leavingAt: number | null = null
   private sessions: readonly SessionRecord[] = []
@@ -43,8 +39,6 @@ export class OverlayController {
   private readonly onSuspend = (): void => {
     this.stopDrag()
     this.suspended = true
-    this.generation++
-    this.probe?.abort()
     this.clearTimers()
     this.hide()
     this.update({
@@ -58,10 +52,7 @@ export class OverlayController {
     this.invalidate()
   }
 
-  constructor(
-    private readonly host: OverlayHost,
-    private readonly mainDirectory: string,
-  ) {}
+  constructor(private readonly host: OverlayHost) {}
 
   private task(action: () => void): void {
     runTask('Companion update', action, () => {
@@ -256,58 +247,41 @@ export class OverlayController {
   private invalidate(): void {
     if (this.disposed || this.suspended) return
     this.stopDrag()
-    this.generation++
-    this.probe?.abort()
     this.hide()
     this.update({ geometry: 'loading', displays: [], anchorId: null, message: null })
-    if (this.debounce) clearTimeout(this.debounce)
-    if (this.retry) clearTimeout(this.retry)
+    this.clearTimers()
     this.debounce = setTimeout(() => {
       this.debounce = null
-      this.task(() => this.readDisplays(this.generation))
+      this.task(() => this.readDisplays())
     }, 180)
   }
 
-  private readDisplays(generation: number): void {
-    const executable = app.isPackaged
-      ? join(process.resourcesPath, 'native/buddy-display')
-      : join(this.mainDirectory, '../native/buddy-display')
-    this.probe = new AbortController()
-    execFile(
-      executable,
-      ['--snapshot'],
-      { timeout: 2500, maxBuffer: 128 * 1024, encoding: 'utf8', signal: this.probe.signal },
-      (error, stdout) => {
-        if (generation !== this.generation || this.disposed || this.suspended) return
-        this.probe = null
-        try {
-          if (error) throw error
-          const displays = matchDisplays(parseNativeDisplays(stdout), screen.getAllDisplays())
-          if (!displays.length) throw new Error('No coherent native/Electron display match')
-          this.failures = 0
-          this.update({ displays, geometry: 'ready', message: null })
-          this.apply()
-        } catch (error) {
-          console.error('Native display probe failed', error)
-          this.hide()
-          this.update({
-            geometry: 'unavailable',
-            displays: [],
-            anchorId: null,
-            message:
-              'Native display information is unavailable. The overlay is hidden; refresh to retry.',
-          })
-          if (++this.failures <= 3)
-            this.retry = setTimeout(
-              () => {
-                this.retry = null
-                this.task(() => this.readDisplays(this.generation))
-              },
-              1000 * 2 ** this.failures,
-            )
-        }
-      },
-    )
+  private readDisplays(): void {
+    if (this.disposed || this.suspended) return
+    try {
+      const displays = mapDisplays(screen.getAllDisplays())
+      if (!displays.length) throw new Error('No usable displays')
+      this.failures = 0
+      this.update({ displays, geometry: 'ready', message: null })
+      this.apply()
+    } catch (error) {
+      console.error('Display refresh failed', error)
+      this.hide()
+      this.update({
+        geometry: 'unavailable',
+        displays: [],
+        anchorId: null,
+        message: 'Display information is unavailable. Reset the companion position to retry.',
+      })
+      if (++this.failures <= 3)
+        this.retry = setTimeout(
+          () => {
+            this.retry = null
+            this.task(() => this.readDisplays())
+          },
+          1000 * 2 ** this.failures,
+        )
+    }
   }
 
   private apply(): void {
@@ -323,7 +297,7 @@ export class OverlayController {
       this.hide()
       return
     }
-    const anchor = companionDisplay(state.displays, this.position)
+    const anchor = companionDisplay(state.displays, this.position, screen.getPrimaryDisplay().id)
     if (!anchor) {
       this.hide()
       return
@@ -457,8 +431,6 @@ export class OverlayController {
 
   dispose(): void {
     this.disposed = true
-    this.generation++
-    this.probe?.abort()
     this.clearTimers()
     if (this.completionTimer) clearTimeout(this.completionTimer)
     this.hide()

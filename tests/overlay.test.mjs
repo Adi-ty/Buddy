@@ -2,29 +2,12 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadSource } from './load-source.mjs'
 
-const { OverlayController, screen, BrowserWindow, powerMonitor, requests } = await loadSource(
+const { OverlayController, screen, BrowserWindow, powerMonitor } = await loadSource(
   'tests/overlay-entry.ts',
   {
     electron: 'tests/electron-mock.mjs',
-    'node:child_process': 'tests/process-mock.mjs',
   },
 )
-const native = JSON.stringify({
-  version: 1,
-  displays: [
-    {
-      id: 1,
-      name: 'Built-in',
-      builtIn: true,
-      frame: { x: 0, y: 0, width: 1512, height: 982 },
-      visibleFrame: { x: 0, y: 24, width: 1512, height: 920 },
-      backingScaleFactor: 2,
-      safeAreaInsets: { top: 38, left: 0, bottom: 0, right: 0 },
-      auxiliaryLeft: { x: 0, y: 944, width: 650, height: 38 },
-      auxiliaryRight: { x: 862, y: 944, width: 650, height: 38 },
-    },
-  ],
-})
 
 test(
   'completion expiry holds hovered rows, releases on leave/collapse and never holds closed sessions',
@@ -42,27 +25,24 @@ test(
       shortcutAvailable: false,
     }
     let window
-    const controller = new OverlayController(
-      {
-        getState: () => state,
-        publish: (next) => {
-          state = next
-        },
-        createWindow: () => {
-          window = new BrowserWindow()
-          return window
-        },
-        openDashboard() {},
-        loadPosition: () => null,
-        savePosition() {},
+    const controller = new OverlayController({
+      getState: () => state,
+      publish: (next) => {
+        state = next
       },
-      '/project/out/main',
-    )
+      createWindow: () => {
+        window = new BrowserWindow()
+        return window
+      },
+      openDashboard() {},
+      loadPosition: () => null,
+      savePosition() {},
+    })
     t.after(() => controller.dispose())
     screen.cursor = { x: 0, y: 0 }
     controller.start()
     t.mock.timers.tick(181)
-    requests.at(-1).callback(null, native)
+
     const done = () => ({ id: 'codex:done', status: 'completed', statusChangedAt: Date.now() })
     controller.setLiveSessions([done()])
     window.emit('ready-to-show')
@@ -125,27 +105,24 @@ test(
       shortcutAvailable: false,
     }
     const windows = []
-    const controller = new OverlayController(
-      {
-        getState: () => state,
-        publish: (next) => {
-          state = next
-        },
-        createWindow: () => {
-          const window = new BrowserWindow()
-          windows.push(window)
-          return window
-        },
-        openDashboard() {},
-        loadPosition: () => null,
-        savePosition() {},
+    const controller = new OverlayController({
+      getState: () => state,
+      publish: (next) => {
+        state = next
       },
-      '/project/out/main',
-    )
+      createWindow: () => {
+        const window = new BrowserWindow()
+        windows.push(window)
+        return window
+      },
+      openDashboard() {},
+      loadPosition: () => null,
+      savePosition() {},
+    })
     t.after(() => controller.dispose())
     controller.start()
     advance(220)
-    requests.at(-1).callback(null, native)
+
     assert.equal(windows.length, 0, 'No empty companion or hit region')
     controller.setLiveSessions([{ id: 'codex:real-session' }])
     assert.equal(windows.length, 1, 'A real observation opens the companion')
@@ -202,29 +179,26 @@ test(
         actualBounds: null,
         shortcutAvailable: false,
       }
-      const controller = new OverlayController(
-        {
-          getState: () => state,
-          publish: (next) => {
-            state = next
-          },
-          createWindow: () => {
-            window = new BrowserWindow()
-            return window
-          },
-          openDashboard() {},
-          loadPosition: () => saved,
-          savePosition: (position) => {
-            if (failSave) throw new Error('disk full')
-            saved = position
-            writes++
-          },
+      const controller = new OverlayController({
+        getState: () => state,
+        publish: (next) => {
+          state = next
         },
-        '/project/out/main',
-      )
+        createWindow: () => {
+          window = new BrowserWindow()
+          return window
+        },
+        openDashboard() {},
+        loadPosition: () => saved,
+        savePosition: (position) => {
+          if (failSave) throw new Error('disk full')
+          saved = position
+          writes++
+        },
+      })
       controller.start()
       t.mock.timers.tick(181)
-      requests.at(-1).callback(null, native)
+
       controller.setLiveSessions([{ id: 'codex:live', status: 'working' }])
       window.emit('ready-to-show')
       return controller
@@ -280,7 +254,7 @@ test(
     assert.deepEqual(window.bounds, duringSleep, 'Sleep stops the drag timer')
     powerMonitor.emit('resume')
     t.mock.timers.tick(181)
-    requests.at(-1).callback(null, native)
+
     assert.deepEqual(window.bounds, compactAfterExpandedMove, 'Wake restores the saved anchor')
 
     failSave = true
@@ -293,13 +267,13 @@ test(
     assert.match(state.message, /could not be saved/)
     controller.resetPosition()
     t.mock.timers.tick(181)
-    requests.at(-1).callback(null, native)
+
     assert.deepEqual(window.bounds, original, 'Reset still works when settings cannot be written')
     assert.match(state.message, /could not be saved/)
     failSave = false
     controller.resetPosition()
     t.mock.timers.tick(181)
-    requests.at(-1).callback(null, native)
+
     assert.deepEqual(window.bounds, original)
     assert.equal(saved, null)
     controller.move('start')
@@ -318,16 +292,6 @@ test(
   { skip: process.platform !== 'darwin' },
   (t) => {
     t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 1_000_000 })
-    const externalNative = {
-      id: 2,
-      uuid: 'external',
-      name: 'External',
-      builtIn: false,
-      frame: { x: -1920, y: 0, width: 1920, height: 1080 },
-      visibleFrame: { x: -1920, y: 0, width: 1920, height: 1056 },
-      backingScaleFactor: 1,
-      safeAreaInsets: { top: 0, left: 0, bottom: 0, right: 0 },
-    }
     const external = {
       id: 2,
       bounds: { x: -1920, y: 0, width: 1920, height: 1080 },
@@ -341,37 +305,24 @@ test(
     let state = { geometry: 'loading', displays: [], expanded: false, visible: false }
     let saved = null
     let window
-    const controller = new OverlayController(
-      {
-        getState: () => state,
-        publish: (next) => {
-          state = next
-        },
-        createWindow: () => {
-          window = new BrowserWindow()
-          return window
-        },
-        openDashboard() {},
-        loadPosition: () => saved,
-        savePosition: (position) => {
-          saved = position
-        },
+    const controller = new OverlayController({
+      getState: () => state,
+      publish: (next) => {
+        state = next
       },
-      '/project/out/main',
-    )
+      createWindow: () => {
+        window = new BrowserWindow()
+        return window
+      },
+      openDashboard() {},
+      loadPosition: () => saved,
+      savePosition: (position) => {
+        saved = position
+      },
+    })
     t.after(() => controller.dispose())
     const geometry = () => {
       t.mock.timers.tick(181)
-      requests.at(-1).callback(
-        null,
-        JSON.stringify({
-          version: 1,
-          displays:
-            displays.length === 2
-              ? [...JSON.parse(native).displays, externalNative]
-              : JSON.parse(native).displays,
-        }),
-      )
     }
     controller.start()
     geometry()
@@ -382,7 +333,7 @@ test(
     screen.cursor = { x: -1900, y: 40 }
     controller.move('finish')
     assert.equal(state.anchorId, 2)
-    assert.equal(saved.displayUuid, 'external')
+    assert.equal(saved.displayId, 2)
     const dropped = { ...window.bounds }
     assert(dropped.x >= -1908 && dropped.y >= 36)
     controller.expand(true)
@@ -394,10 +345,45 @@ test(
     screen.emit('display-removed')
     geometry()
     assert.equal(state.anchorId, 1)
-    assert.equal(saved.displayUuid, 'external', 'Fallback does not overwrite the preferred display')
+    assert.equal(saved.displayId, 2, 'Fallback does not overwrite the preferred display')
     displays = [builtIn, external]
     screen.emit('display-added')
     geometry()
+    assert.deepEqual(window.bounds, dropped)
+
+    // Rotation, scaling and work-area changes must reflow the existing anchor.
+    const resized = {
+      ...external,
+      rotation: 90,
+      scaleFactor: 1.5,
+      bounds: { x: -720, y: -1280, width: 720, height: 1280 },
+      workArea: { x: -680, y: -1256, width: 680, height: 1256 },
+    }
+    displays = [builtIn, resized]
+    screen.emit('display-metrics-changed', {}, resized, [
+      'bounds',
+      'workArea',
+      'scaleFactor',
+      'rotation',
+    ])
+    geometry()
+    assert.equal(state.anchorId, 2)
+    controller.expand(true)
+    assert(window.bounds.x >= -680 && window.bounds.x + window.bounds.width <= 0)
+    assert(window.bounds.y >= -1256 && window.bounds.y + window.bounds.height <= 0)
+
+    // Temporary display loss hides the card; retry restores it without a helper process.
+    displays = []
+    screen.emit('display-removed')
+    geometry()
+    assert.equal(state.geometry, 'unavailable')
+    assert.equal(state.visible, false)
+    assert.equal(window.ignored, true)
+    displays = [builtIn, external]
+    t.mock.timers.tick(2001)
+    assert.equal(state.geometry, 'ready')
+    assert.equal(state.anchorId, 2)
+    controller.expand(false)
     assert.deepEqual(window.bounds, dropped)
   },
 )

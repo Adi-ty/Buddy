@@ -228,7 +228,7 @@ async function verify() {
   const bounds = overlay.getBounds()
   const placement = (await snapshot(dashboard)).overlay
   const display = placement.displays.find((item) => item.id === placement.anchorId)
-  assert(bounds.y >= Math.max(display.bounds.y + display.safeTop, display.workArea.y))
+  assert(bounds.y >= display.workArea.y)
   assert(
     bounds.x >= display.workArea.x &&
       bounds.x + bounds.width <= display.workArea.x + display.workArea.width,
