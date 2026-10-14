@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
-const { resolve, join } = require('node:path')
-const { app, nativeTheme, powerMonitor, screen } = require('electron')
+const { mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
+const { dirname, resolve, join } = require('node:path')
+const { app, dialog, nativeTheme, powerMonitor, screen } = require('electron')
 
 if (process.platform !== 'darwin') {
   console.error('The native smoke test requires macOS and a graphical login session.')
@@ -11,13 +11,18 @@ if (process.platform !== 'darwin') {
 // A separate profile keeps test events out of the user's session history.
 const artifacts = resolve('.cache/smoke')
 mkdirSync(artifacts, { recursive: true })
-const profile = mkdtempSync(join(artifacts, 'profile-'))
+const profile = process.env.BUDDY_SMOKE_PROFILE
+if (!profile || dirname(profile) !== artifacts) {
+  console.error('Run smoke tests with npm run test:smoke.')
+  app.exit(1)
+}
 // Observer actions exercise real writes, scoped to disposable harness configs.
 process.env.CODEX_HOME = join(profile, 'codex')
 process.env.CLAUDE_CONFIG_DIR = join(profile, 'claude')
 process.env.OPENCODE_CONFIG_DIR = join(profile, 'opencode')
 process.env.XDG_CONFIG_HOME = join(profile, 'config')
 process.env.XDG_DATA_HOME = join(profile, 'data')
+process.env.XDG_STATE_HOME = join(profile, 'state')
 delete process.env.ELECTRON_RENDERER_URL
 // CLI fixtures only exercise Buddy's setup/detection contracts. Compatibility
 // with actual installed harness versions is a separate integration check.
@@ -43,6 +48,7 @@ for (const path of [
   process.env.OPENCODE_CONFIG_DIR,
   process.env.XDG_CONFIG_HOME,
   process.env.XDG_DATA_HOME,
+  process.env.XDG_STATE_HOME,
 ])
   mkdirSync(path, { recursive: true })
 writeFileSync(
@@ -118,6 +124,25 @@ async function rejectsCompanionMove(window, action) {
   }
 }
 const snapshot = (window) => js(window, 'window.buddy.getSnapshot()')
+const waitForSelector = (window, selector) =>
+  until(
+    () => js(window, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
+    `rendered ${selector}`,
+  )
+const clickSelector = (window, selector) =>
+  until(
+    () =>
+      js(
+        window,
+        `(() => {
+          const element = document.querySelector(${JSON.stringify(selector)});
+          if (!element || element.matches(':disabled') || !element.getClientRects().length) return false;
+          element.click();
+          return true;
+        })()`,
+      ),
+    `clickable ${selector}`,
+  )
 const click = (window, text) =>
   js(
     window,
@@ -493,6 +518,58 @@ async function verify() {
     () => js(dashboard, 'document.body.textContent.includes("Integrations refreshed.")'),
     'refresh feedback',
   )
+  // Exercise the real preload/IPC/settings path with a controlled native file
+  // picker. No developer installations or shell profiles are modified.
+  const showOpenDialog = dialog.showOpenDialog
+  try {
+    for (const harness of (await snapshot(dashboard)).harnesses) {
+      const command = harness.id === 'claude-code' ? 'claude' : harness.id
+      const custom = join(profile, `custom ${command}`)
+      writeFileSync(custom, readFileSync(join(bin, command)), { mode: 0o700 })
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [custom] })
+      await js(dashboard, `window.buddy.chooseExecutable(${JSON.stringify(harness.id)})`)
+      let current = (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id)
+      assert.equal(current.executablePath, custom)
+      assert.equal(current.executableOverride, true)
+      assert.equal(current.canInstall, true)
+      assert.equal(
+        JSON.parse(readFileSync(join(profile, 'settings.json'), 'utf8')).executables[harness.id],
+        custom,
+      )
+      await until(
+        () => js(dashboard, `document.body.textContent.includes(${JSON.stringify(custom)})`),
+        'chosen executable is visible',
+      )
+
+      dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+      await js(dashboard, `window.buddy.chooseExecutable(${JSON.stringify(harness.id)})`)
+      assert.equal(
+        (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id).executablePath,
+        custom,
+      )
+      rmSync(custom)
+      await js(dashboard, 'window.buddy.refreshIntegrations()')
+      current = (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id)
+      assert.equal(current.installation, 'broken')
+      assert.equal(current.canInstall, false)
+      assert.equal(
+        current.executablePath,
+        custom,
+        'missing override never silently switches installations',
+      )
+      await until(
+        () => js(dashboard, 'document.body.textContent.includes("CLI could not run")'),
+        'missing executable feedback',
+      )
+      await js(dashboard, `window.buddy.chooseExecutable(${JSON.stringify(harness.id)}, true)`)
+      current = (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id)
+      assert.equal(current.executablePath, join(bin, command))
+      assert.equal(current.executableOverride, false)
+      assert.equal(current.canInstall, true)
+    }
+  } finally {
+    dialog.showOpenDialog = showOpenDialog
+  }
   for (const harness of (await snapshot(dashboard)).harnesses) {
     assert(harness.canInstall, `CLI fixture must match the verified ${harness.name} contract`)
     await js(
@@ -972,10 +1049,8 @@ async function verify() {
 
   // Exercise the installed OpenCode V2 plugin through its event subscription.
   await js(dashboard, 'window.buddy.installIntegration("opencode")')
-  const { pathToFileURL } = require('node:url')
-  const { default: BuddyPlugin } = await import(
-    pathToFileURL(join(profile, 'integrations/opencode-plugin.mjs')).href
-  )
+  const { loadInstalledOpenCodePlugin } = await import('./opencode-host-fixture.mjs')
+  const BuddyPlugin = await loadInstalledOpenCodePlugin(profile)
   const familyRoot = 'family-root'
   const familyChildren = Array.from({ length: 7 }, (_, i) => `family-child-${i}`)
   const familyInfos = new Map([
@@ -994,8 +1069,12 @@ async function verify() {
   let wakeEvent = () => {}
   const pluginCleanup = BuddyPlugin.setup({
     location: { directory: '/projects/buddy' },
+    session: {
+      get: async ({ sessionID }) => familyInfos.get(sessionID),
+    },
     event: {
       subscribe({ signal }) {
+        signal.addEventListener('abort', () => wakeEvent(), { once: true })
         return {
           async *[Symbol.asyncIterator]() {
             while (!signal.aborted) {
@@ -1031,10 +1110,8 @@ async function verify() {
     () => js(dashboard, 'document.querySelector("h1").textContent === "Sessions"'),
     'session keyboard matrix',
   )
-  await js(
-    dashboard,
-    `window.buddy.getSnapshot().then(() => document.querySelector('[data-session-id="opencode:family-root"]').click())`,
-  )
+  await clickSelector(dashboard, '.session-row[data-session-id="opencode:family-root"]')
+  await waitForSelector(dashboard, '.session-row[data-session-id="opencode:family-child-0"]')
   await js(
     dashboard,
     `(() => { const row = document.querySelector('[data-session-id="opencode:family-root"]'); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); })()`,
@@ -1061,13 +1138,13 @@ async function verify() {
     'opencode:family-root',
     'Escape restores focus to the parent instead of an unmounted subagent',
   )
-  await js(
-    overlay,
-    'document.querySelector(\'section[aria-label^="Subagents of"] summary\').click()',
-  )
-  await js(
-    overlay,
-    'document.querySelector(\'[data-session-id="opencode:family-child-0"]\').click()',
+  await expand(overlay)
+  await openOverlayRow(overlay, 'opencode:family-root')
+  await clickSelector(overlay, 'section[aria-label^="Subagents of"] summary')
+  await clickSelector(overlay, '[data-session-id="opencode:family-child-0"]')
+  await until(
+    () => js(overlay, 'document.body.textContent.includes("View parent session")'),
+    'child session details rendered',
   )
   await click(overlay, 'View parent session')
   await until(
@@ -1086,7 +1163,7 @@ async function verify() {
   await js(dashboard, 'window.buddy.removeIntegration("opencode")')
   assert.deepEqual(errors, [])
   console.log(
-    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested-child questions above collapsed subagents; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
+    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested subagent navigation; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
   )
   // A final deferred write must survive normal Electron quit.
   await send('SessionStart', 'quit-flush')
@@ -1097,22 +1174,6 @@ void import('../out/main/index.js')
   .then(verify)
   .then(() => {
     stopping = true
-    app.once('will-quit', () => {
-      try {
-        const durable = readFileSync(join(profile, 'sessions.json'), 'utf8')
-        assert.equal(
-          JSON.parse(durable).records.find((record) => record.id === 'codex:quit-flush').status,
-          'working',
-        )
-        assert(!durable.includes('echo smoke fixture'), 'Approval details are memory-only')
-        rmSync(profile, { recursive: true, force: true })
-        clearTimeout(timeout)
-        console.log('PASS: normal quit flushes pending session state')
-      } catch (error) {
-        console.error(error)
-        app.exit(1)
-      }
-    })
     app.quit()
   })
   .catch(fail)

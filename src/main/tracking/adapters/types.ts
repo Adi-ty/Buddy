@@ -30,7 +30,7 @@ export interface HarnessAdapter {
     verified: string
     matches?(version: string): boolean
     supports?(version: string): boolean
-    probe?(path: string): Promise<boolean>
+    probe?(path: string, env: NodeJS.ProcessEnv): Promise<boolean>
   }
   target(ctx: { profile: string; development: boolean }): string
   installMode: 'hooks' | 'plugin'

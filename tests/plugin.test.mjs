@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { cpSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build } from 'esbuild'
+import { loadInstalledOpenCodePlugin } from './opencode-host-fixture.mjs'
+
+test('installed OpenCode plugin loads in an isolated smoke host without a global CLI or SDK', async (t) => {
+  const profile = mkdtempSync(join(tmpdir(), 'buddy-plugin-host-'))
+  t.after(() => rmSync(profile, { recursive: true, force: true }))
+  cpSync('integrations', join(profile, 'integrations'), { recursive: true })
+  const plugin = await loadInstalledOpenCodePlugin(profile)
+  assert.equal(plugin.id, 'buddy.session-observer')
+  assert.equal(typeof plugin.setup, 'function')
+})
 
 async function loadPlugin() {
   const result = await build({

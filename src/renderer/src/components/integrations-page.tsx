@@ -29,6 +29,8 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
       | 'install-unverified'
       | 'remove'
       | 'refresh'
+      | 'choose-executable'
+      | 'reset-executable'
       | 'enable-controls'
       | 'disable-controls',
     harness?: HarnessId,
@@ -41,6 +43,10 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         await window.buddy.refreshIntegrations()
         setNotice({ error: false, text: 'Integrations refreshed.' })
       } else if (harness) {
+        if (action === 'choose-executable' || action === 'reset-executable') {
+          await window.buddy.chooseExecutable(harness, action === 'reset-executable')
+          return
+        }
         if (action === 'enable-controls' || action === 'disable-controls') {
           await window.buddy.setIntegrationControls(harness, action === 'enable-controls')
           setNotice({
@@ -135,7 +141,9 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                           ? `CLI ${harness.version}`
                           : harness.installation === 'not-checked'
                             ? 'Checking installation…'
-                            : 'CLI not found'}
+                            : harness.installation === 'broken'
+                              ? 'CLI could not run'
+                              : 'CLI not found'}
                       </p>
                     </div>
                     <Badge variant={installed ? 'success' : incomplete ? 'attention' : 'outline'}>
@@ -146,6 +154,40 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
                           ? 'Setup incomplete'
                           : 'Not connected'}
                     </Badge>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {harness.executablePath && (
+                      <p className="break-all font-mono text-xs text-muted-foreground">
+                        {harness.executablePath}
+                      </p>
+                    )}
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={pending !== null}
+                        onClick={() => void act('choose-executable', harness.id)}
+                      >
+                        Choose executable…
+                      </Button>
+                      {harness.executableOverride && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={pending !== null}
+                          onClick={() => void act('reset-executable', harness.id)}
+                        >
+                          Use automatic detection
+                        </Button>
+                      )}
+                    </div>
+                    <Notice
+                      message={
+                        harness.discoveryError
+                          ? { error: true, text: harness.discoveryError }
+                          : null
+                      }
+                    />
                   </div>
                   <p className="mt-4 text-sm leading-6 text-muted-foreground">
                     {installed && receiving
