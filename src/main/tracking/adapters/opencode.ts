@@ -109,6 +109,7 @@ export const opencode: HarnessAdapter = {
         break
       case 'question.asked':
       case 'form.created':
+      case 'session.form.created':
         result = { status: 'needs-attention', action: 'question' }
         break
       case 'permission.replied':
@@ -117,6 +118,8 @@ export const opencode: HarnessAdapter = {
       case 'question.rejected':
       case 'form.replied':
       case 'form.cancelled':
+      case 'session.form.answered':
+      case 'session.form.cancelled':
         result = { status: null, action: 'resolve' }
         break
       default:

@@ -144,8 +144,11 @@ test('adapter event fixtures preserve lifecycle, completion and provider-specifi
     ['opencode', 'permission.v2.asked', {}, 'needs-attention', 'permission'],
     ['opencode', 'question.asked', {}, 'needs-attention', 'question'],
     ['opencode', 'form.created', {}, 'needs-attention', 'question'],
+    ['opencode', 'session.form.created', {}, 'needs-attention', 'question'],
     ['opencode', 'form.replied', {}, null, 'resolve'],
     ['opencode', 'form.cancelled', {}, null, 'resolve'],
+    ['opencode', 'session.form.answered', {}, null, 'resolve'],
+    ['opencode', 'session.form.cancelled', {}, null, 'resolve'],
     ['opencode', 'question.rejected', {}, null, 'resolve'],
   ]) {
     const mapped = normalize(harness, event, extra)
