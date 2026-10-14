@@ -312,6 +312,10 @@ export class RequestBridge {
     )
       return
     // Updating an existing source request never re-enables a submitted answer.
+    // A different connection re-sending the same harness request (e.g. two
+    // OpenCode plugin hosts observing one form) must not create a second
+    // visible prompt. Retire the duplicate sender; ownership stays strict so
+    // only the original connection can resolve or answer it.
     const existing = [...this.pending.values()].find(
       (p) => p.owner === socket && p.sourceId === packet.id,
     )
@@ -321,6 +325,12 @@ export class RequestBridge {
         existing.view = { ...existing.view, expiresAt: Date.now() + 70_000 }
         existing.timer = setTimeout(() => this.finish(existing.view.id, 'native'), 70_000)
       }
+      return
+    }
+    if (
+      [...this.pending.values()].some((p) => p.view.harness === harness && p.sourceId === packet.id)
+    ) {
+      this.send(socket, { op: 'retired', id: packet.id })
       return
     }
     const retire = () => this.send(socket, { op: 'retired', id: packet.id })

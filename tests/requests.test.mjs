@@ -128,6 +128,24 @@ test(
 )
 
 test(
+  'a second connection re-sending the same request is retired without duplicating the prompt',
+  { timeout: 10_000 },
+  async (t) => {
+    const { bridge, client } = await fixture(t)
+    const owner = await client('opencode')
+    const other = await client('opencode')
+    owner.send({ ...permission(), hook: false })
+    await waitFor(() => bridge.snapshot().length === 1)
+    other.send({ ...permission(), hook: false })
+    await waitFor(() => other.messages.some((p) => p.op === 'retired' && p.id === 'request-1'))
+    await new Promise((done) => setTimeout(done, 20))
+    assert.equal(bridge.snapshot().length, 1)
+    owner.send({ op: 'resolved', id: 'request-1' })
+    await waitFor(() => !bridge.snapshot().length)
+  },
+)
+
+test(
   'question responses require every answer and preserve multi-select/custom text without selecting defaults',
   { timeout: 10_000 },
   async (t) => {
