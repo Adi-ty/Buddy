@@ -249,7 +249,8 @@ export class IntegrationManager {
           setup: cli.error
             ? 'Fix the CLI installation or choose another executable, then refresh.'
             : detected && !detected.capable
-              ? 'The required observer feature is unavailable. An unverified-version override cannot enable it.'
+              ? (adapter.compat.unsupported ??
+                'The required observer feature is unavailable. An unverified-version override cannot enable it.')
               : adapter.setupCopy(
                   observer === 'installed'
                     ? 'installed'
@@ -304,10 +305,17 @@ export class IntegrationManager {
     mkdirSync(integrationDirectory, { recursive: true, mode: 0o700 })
     const reporter = readFileSync(join(this.bundled, 'reporter.mjs'), 'utf8')
     const assets: Record<string, string> = { 'reporter.mjs': reporter }
-    for (const name of ['control-client.mjs', 'control-hook.mjs'])
+    for (const name of [
+      'control-client.mjs',
+      'control-hook.mjs',
+      'opencode-api.mjs',
+      'opencode-forms.mjs',
+    ])
       assets[name] = readFileSync(join(this.bundled, name), 'utf8')
+    // Do not replace an existing plugin with an incompatible implementation
+    // merely because another harness was refreshed or installed.
     for (const adapter of HARNESSES)
-      if (adapter.pluginAsset)
+      if (adapter.pluginAsset && this.detected.get(adapter.id)?.capable !== false)
         assets[adapter.pluginAsset] = readFileSync(
           join(this.bundled, adapter.pluginAsset),
           'utf8',

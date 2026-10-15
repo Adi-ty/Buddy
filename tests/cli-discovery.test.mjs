@@ -18,7 +18,7 @@ const { CliDiscovery, readShellEnvironment, cliEnvironment, findCli, validateExe
 const { IntegrationManager } = await loadSource('src/main/tracking/integrations.ts')
 const { ProfileSettings } = await loadSource('src/main/settings.ts')
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
-const versions = { codex: '0.162.1', claude: '2.1.295', opencode: '2.0.0' }
+const versions = { codex: '0.162.1', claude: '2.1.295', opencode: '2.0.29' }
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'buddy-discovery-'))
@@ -310,4 +310,46 @@ test('path settings preserve unrelated preferences and reject shell commands', a
   assert.equal(settings.controlsEnabled('codex'), true)
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).future, 7)
   assert.throws(() => settings.setExecutable('codex', 'npx codex'))
+})
+
+test('OpenCode V2 migration is explicit, version-scoped and preserves a V1 observer on refresh', async (t) => {
+  const f = fixture(t)
+  const executable = join(f.bin, 'opencode')
+  f.executable(executable, 'echo 2.0.29')
+  const settings = new ProfileSettings(join(f.root, 'settings.json'))
+  const manager = new IntegrationManager(
+    f.root,
+    join(process.cwd(), 'integrations'),
+    true,
+    settings,
+    new CliDiscovery({ resolveShell: false, env: f.env }),
+  )
+  manager.target = () => join(f.root, 'plugin.js')
+  const catalog = [{ id: 'opencode' }]
+  let [entry] = await manager.refresh(catalog)
+  assert.equal(entry.compatibility, 'verified')
+  await manager.install('opencode')
+  for (const name of ['opencode-plugin.mjs', 'opencode-api.mjs', 'opencode-forms.mjs'])
+    assert(readFileSync(join(f.root, 'integrations', name), 'utf8').length > 0)
+  const asset = join(f.root, 'integrations/opencode-plugin.mjs')
+  const wrapper = readFileSync(manager.target(), 'utf8')
+  writeFileSync(asset, '// prior V1 observer')
+  f.executable(executable, 'echo 1.18.35')
+  ;[entry] = await manager.refresh(catalog)
+  assert.equal(entry.compatibility, 'unsupported')
+  assert.equal(entry.canInstall, false)
+  assert.equal(entry.canInstallUnverified, false)
+  assert.match(entry.setup, /V1 is no longer supported/)
+  await assert.rejects(() => manager.install('opencode', true), /unavailable/)
+  assert.equal(readFileSync(asset, 'utf8'), '// prior V1 observer')
+  assert.equal(readFileSync(manager.target(), 'utf8'), wrapper)
+  f.executable(executable, 'echo 2.1.0-beta.1')
+  ;[entry] = await manager.refresh(catalog)
+  assert.equal(entry.compatibility, 'unverified')
+  assert.equal(entry.canInstall, false)
+  assert.equal(entry.canInstallUnverified, true)
+  await assert.rejects(() => manager.install('opencode'), /version/)
+  await manager.install('opencode', true)
+  assert.equal(settings.allowedVersion('opencode'), '2.1.0-beta.1')
+  assert.notEqual(readFileSync(asset, 'utf8'), '// prior V1 observer')
 })

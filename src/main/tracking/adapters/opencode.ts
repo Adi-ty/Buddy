@@ -12,8 +12,8 @@ export const opencode: HarnessAdapter = {
   pluginAsset: 'opencode-plugin.mjs',
   cli: { command: 'opencode', extraPaths: [join(homedir(), '.opencode/bin')] },
   compat: {
-    verified: '2.x',
-    matches: (version) => /^2\./.test(version),
+    verified: '2.0.29',
+    unsupported: 'OpenCode V1 is no longer supported. Upgrade to V2, then refresh.',
     supports: (version) => /^2\./.test(version),
   },
   target: ({ development }) =>
@@ -34,6 +34,8 @@ export const opencode: HarnessAdapter = {
     switch (p.event) {
       case 'session.created':
       case 'session.updated':
+      case 'session.renamed':
+      case 'session.moved':
         result = { status: null, action: 'metadata' }
         break
       case 'session.deleted':
@@ -71,6 +73,7 @@ export const opencode: HarnessAdapter = {
       case 'session.tool.progress':
       case 'session.tool.success':
       case 'session.tool.error':
+      case 'session.tool.failed':
       case 'session.execution.started':
       case 'session.retry.scheduled':
         result = { status: 'working', action: 'observe', turnActive: true }
@@ -129,12 +132,13 @@ export const opencode: HarnessAdapter = {
   },
   displayName: (ordinal) => `OpenCode ${ordinal + 1}`,
   setupCopy(kind, target) {
-    if (kind === 'installed') return 'Restart OpenCode to start tracking sessions.'
+    if (kind === 'installed')
+      return 'Requires OpenCode V2. Restart OpenCode to start tracking. Form replies require its local background service.'
     if (kind === 'removed' || kind === 'remove')
       return 'Observer removed. Restart OpenCode to finish disconnecting.'
     if (kind === 'missingCli') return 'Install this CLI, then refresh.'
     if (kind === 'unverified')
-      return 'This OpenCode version is unsupported. Buddy requires OpenCode V2.'
+      return 'This OpenCode V2 version is unverified. Buddy may misreport activity.'
     return `Adds a local observer at ${target}. Restart OpenCode to load it.`
   },
 }

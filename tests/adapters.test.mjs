@@ -189,9 +189,13 @@ test('version detection retains prerelease and build identities for exact-versio
   assert.equal(parseCliVersion('opencode v2.0.28'), '2.0.28')
   assert(isCliVersion('1.18.35-beta'))
   assert(!isCliVersion('not a version'))
-  assert(ADAPTERS.opencode.compat.matches('2.0.0'))
-  assert(ADAPTERS.opencode.compat.matches('2.4.1-beta.2'))
-  assert(!ADAPTERS.opencode.compat.matches('1.18.35'))
+  assert.equal(ADAPTERS.opencode.compat.verified, '2.0.29')
+  assert.equal(
+    ADAPTERS.opencode.compat.matches,
+    undefined,
+    'Verification uses an exact release, not all future V2 versions',
+  )
+  assert(ADAPTERS.opencode.compat.supports('2.4.1-beta.2'))
   assert(!ADAPTERS.opencode.compat.supports('1.18.35'))
 })
 

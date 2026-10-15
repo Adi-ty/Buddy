@@ -28,6 +28,7 @@ export interface HarnessAdapter {
   cli: { command: string; extraPaths: string[] }
   compat: {
     verified: string
+    unsupported?: string
     matches?(version: string): boolean
     supports?(version: string): boolean
     probe?(path: string, env: NodeJS.ProcessEnv): Promise<boolean>

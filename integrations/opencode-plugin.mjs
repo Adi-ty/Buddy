@@ -1,161 +1,204 @@
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Plugin } from '@opencode/plugin'
 import { connectControls } from './control-client.mjs'
 import { report } from './reporter.mjs'
+import { apiJson, serviceEndpoint } from './opencode-api.mjs'
+import { formQuestions, formAnswer } from './opencode-forms.mjs'
 
-// The installer replaces this placeholder with Buddy's private descriptor.
 const configPath = '__BUDDY_BRIDGE_CONFIG__'
-const watched = new Set([
+const metadataEvents = new Set([
   'session.created',
   'session.updated',
-  'session.deleted',
-  'session.status',
+  'session.renamed',
+  'session.moved',
+])
+const workingEvents = new Set([
   'session.step.started',
   'session.step.ended',
   'session.tool.called',
   'session.tool.progress',
   'session.tool.success',
   'session.tool.error',
+  'session.tool.failed',
   'session.execution.started',
+  'session.retry.scheduled',
+])
+const terminalEvents = new Set([
+  'session.idle',
   'session.execution.succeeded',
   'session.execution.failed',
   'session.execution.interrupted',
-  'session.retry.scheduled',
-  'session.idle',
   'session.error',
-  'permission.asked',
+])
+const askEvents = new Map([
+  ['permission.asked', 'permission'],
+  ['permission.v2.asked', 'permission'],
+  ['form.created', 'question'],
+  ['session.form.created', 'question'],
+])
+const resolveEvents = new Set([
   'permission.replied',
-  'permission.v2.asked',
   'permission.v2.replied',
-  'question.asked',
-  'question.replied',
-  'question.rejected',
-  'form.created',
   'form.replied',
   'form.cancelled',
-  'session.form.created',
   'session.form.answered',
   'session.form.cancelled',
 ])
+const watched = new Set([
+  ...metadataEvents,
+  ...workingEvents,
+  ...terminalEvents,
+  ...askEvents.keys(),
+  ...resolveEvents,
+  'session.status',
+  'session.deleted',
+])
 const valueOf = (response) => response?.data ?? response
-const formClaims = new Set()
+const requestId = (p) => p.requestID ?? p.permissionID ?? p.formID ?? p.id
+const sessionId = (p) => p.sessionID ?? p.info?.id ?? p.session?.id ?? p.id
+const directoryOf = (info) => info?.location?.directory ?? info?.directory
 
 export default Plugin.define({
   id: 'buddy.session-observer',
   setup(ctx) {
-    let lastStamp = 0
     let disposed = false
+    let lastStamp = 0
+    let revision = 0
     let controls
     let controlConnected = false
     let controlEnabled = false
     let recovering = false
     let reconcileAgain = false
+    let reconcileTimer
+    let reconnectTimer
+    let retryDelay = 1000
+    const lifetime = new AbortController()
     const known = new Map()
     const active = new Set()
+    const recheck = new Set()
+    const generations = new Map()
+    const deleted = new Set()
+    const seen = new Set()
+    const metadataLoaded = new Map()
+    const metadataPending = new Map()
+    const requests = new Map()
     const published = new Map()
-    const pendingReplies = new Set()
     const nativeRequests = new Set()
-    const controller = new AbortController()
-    let serviceCache
-
-    // OpenCode's plugin host provides @opencode/plugin only. Form APIs are
-    // reached over the local service HTTP API with stdlib fetch + fs so the
-    // plugin has no extra package dependencies to resolve.
-    const serviceEndpoint = async () => {
-      if (serviceCache) return serviceCache
-      const file = process.env.XDG_STATE_HOME
-        ? join(process.env.XDG_STATE_HOME, 'opencode', 'service.json')
-        : join(homedir(), '.local', 'state', 'opencode', 'service.json')
-      const info = JSON.parse(readFileSync(file, 'utf8'))
-      if (!info?.url || typeof info.url !== 'string')
-        throw new Error('OpenCode service is unavailable')
-      const headers =
-        typeof info.password === 'string' && info.password
-          ? {
-              authorization: 'Basic ' + Buffer.from(`opencode:${info.password}`).toString('base64'),
-            }
-          : {}
-      serviceCache = { url: info.url.replace(/\/$/, ''), headers }
-      return serviceCache
+    const pendingReplies = new Set()
+    const touch = (id) => generations.set(id, ++revision)
+    const current = (id, before, signal) =>
+      !disposed && !signal.aborted && !deleted.has(id) && (generations.get(id) ?? 0) <= before
+    const controlSend = (packet) => {
+      if (!disposed) controls?.send(packet)
     }
 
-    const apiJson = async (path, init) => {
-      const attempt = async (retried) => {
-        const endpoint = await serviceEndpoint()
-        let response
-        try {
-          response = await fetch(endpoint.url + path, {
-            ...init,
-            headers: { ...endpoint.headers, ...(init?.headers ?? {}) },
-          })
-        } catch (error) {
-          if (!retried) {
-            serviceCache = undefined
-            return attempt(true)
-          }
-          throw error
-        }
-        if (response.status === 401 || response.status === 403) {
-          if (!retried) {
-            serviceCache = undefined
-            return attempt(true)
-          }
-          throw new Error(`OpenCode API ${response.status}`)
-        }
-        if (!response.ok) throw new Error(`OpenCode API ${response.status}`)
-        if (response.status === 204) return null
-        return response.json()
-      }
-      return attempt(false)
-    }
-
-    const send = (type, properties = {}, eventId) => {
-      const info =
-        properties.info ??
-        properties.session ??
-        (['session.created', 'session.updated'].includes(type) ? properties : null)
-      const sessionId = properties.sessionID ?? info?.id
-      if (typeof sessionId !== 'string') return
-      if (info && typeof info === 'object') {
-        const previous = known.get(sessionId) ?? {}
-        known.set(sessionId, {
-          cwd: info.directory ?? previous.cwd ?? ctx.location.directory,
-          ...(typeof info.parentID === 'string' ? { parentId: info.parentID } : {}),
-          ...(typeof info.title === 'string' ? { title: info.title } : {}),
+    // Race cancellation as well as passing a signal: current plugin methods
+    // may ignore request options, and must not pin recovery or reply controls.
+    const bounded = async (operation, timeout) => {
+      const controller = new AbortController()
+      const signal = AbortSignal.any([lifetime.signal, controller.signal])
+      const timer = setTimeout(() => controller.abort(), timeout)
+      let rejectAbort
+      try {
+        const cancelled = new Promise((_, reject) => {
+          rejectAbort = () => reject(new Error('OpenCode operation cancelled'))
+          signal.addEventListener('abort', rejectAbort, { once: true })
+          if (signal.aborted) rejectAbort()
         })
+        return await Promise.race([
+          cancelled,
+          Promise.resolve().then(() => {
+            signal.throwIfAborted()
+            return operation(signal)
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', rejectAbort)
       }
-      if (!known.has(sessionId)) known.set(sessionId, { cwd: ctx.location.directory })
-      const context = known.get(sessionId) ?? { cwd: ctx.location.directory }
+    }
+    const remember = (id, info) => {
+      known.set(id, {
+        ...known.get(id),
+        ...(directoryOf(info) ? { cwd: directoryOf(info) } : {}),
+        ...(typeof info.parentID === 'string' && info.parentID !== id
+          ? { parentId: info.parentID }
+          : {}),
+        ...(typeof info.title === 'string' ? { title: info.title } : {}),
+      })
+    }
+    const send = (event, id, p = {}, extra = {}) => {
+      if (disposed || deleted.has(id)) return
       lastStamp = Math.max(Date.now(), lastStamp + 0.01)
       void report(configPath, {
         harness: 'opencode',
-        event: type,
-        sessionId,
-        ...context,
-        id: eventId ?? randomUUID(),
+        event,
+        sessionId: id,
+        cwd: ctx.location.directory,
+        ...known.get(id),
+        id: randomUUID(),
         at: lastStamp,
-        status: properties.status?.type ?? properties.status,
-        interrupted: type === 'session.error' && properties.error?.name === 'MessageAbortedError',
-        requestId: properties.requestID ?? properties.permissionID ?? properties.id,
+        status: p.status?.type ?? p.status,
+        interrupted: event === 'session.error' && p.error?.name === 'MessageAbortedError',
+        requestId: requestId(p),
+        ...extra,
       })
-      if (type === 'session.deleted') {
-        known.delete(sessionId)
-        active.delete(sessionId)
-      }
     }
-
-    const publishRequest = (request, kind, questions = []) => {
+    const recoverMetadata = async (id, ancestors = new Set()) => {
+      if (disposed || deleted.has(id) || ancestors.has(id) || ancestors.size >= 8) return
+      ancestors.add(id)
+      if (!metadataLoaded.has(id) || Date.now() - metadataLoaded.get(id) >= 30_000) {
+        let pending = metadataPending.get(id)
+        if (!pending && metadataPending.size < 32 && typeof ctx.session.get === 'function') {
+          pending = bounded(async (signal) => {
+            const before = known.get(id)
+            const info = valueOf(await ctx.session.get({ sessionID: id }, { signal }))
+            if (disposed || signal.aborted || deleted.has(id) || info?.id !== id) return
+            // A rename/move received during this read wins, while missing fields
+            // (especially ancestry) can still be recovered from the response.
+            const newer = known.get(id)
+            remember(id, info)
+            if (newer !== before) known.set(id, { ...known.get(id), ...newer })
+            metadataLoaded.set(id, Date.now())
+            if (known.get(id)?.cwd === ctx.location.directory || ancestors.size > 1)
+              send('session.updated', id)
+          }, 1000)
+            .catch(() => {})
+            .finally(() => metadataPending.delete(id))
+          metadataPending.set(id, pending)
+        }
+        await pending
+      }
+      if (disposed || deleted.has(id)) return
+      const parent = known.get(id)?.parentId
+      if (parent) await recoverMetadata(parent, ancestors)
+    }
+    const retire = (id) => {
+      if (published.has(id)) controlSend({ op: 'resolved', id })
+      published.delete(id)
+      nativeRequests.delete(id)
+    }
+    const publishRequest = (entry) => {
+      const { request, kind } = entry
       if (
+        disposed ||
         !controlEnabled ||
-        typeof request?.id !== 'string' ||
-        typeof request.sessionID !== 'string'
+        published.has(request.id) ||
+        nativeRequests.has(request.id) ||
+        deleted.has(request.sessionID)
       )
         return
-      if (published.has(request.id)) return
-      if (kind === 'question' && formClaims.has(request.id)) return
+      let questions
+      if (kind === 'question') {
+        questions = formQuestions(request)
+        if (!questions) return
+        try {
+          serviceEndpoint()
+        } catch {
+          return
+        }
+      }
       const details =
         kind === 'permission'
           ? JSON.stringify(
@@ -169,126 +212,96 @@ export default Plugin.define({
               2,
             )
           : (request.title ?? 'Your agent needs an answer to continue.')
-      if (details.length > 64_000) return
-      const requestId = request.id
-      published.set(requestId, {
-        sessionId: request.sessionID,
-        kind,
-        questions,
-        formId: kind === 'question' ? request.id : null,
-      })
-      if (kind === 'question') formClaims.add(requestId)
-      controls?.send({
+      if (typeof details !== 'string' || details.length > 64_000) return
+      published.set(request.id, entry)
+      controlSend({
         op: 'request',
-        id: requestId,
+        id: request.id,
         sessionId: request.sessionID,
         kind,
         details,
         cwd: known.get(request.sessionID)?.cwd ?? ctx.location.directory,
         tool: kind === 'permission' ? (request.action ?? request.permission ?? null) : null,
         persistent: kind === 'question',
-        ...(kind === 'question' ? { questions } : {}),
+        ...(questions ? { questions } : {}),
       })
     }
-
-    const listForms = async (sessionID) =>
-      valueOf(await apiJson(`/api/session/${encodeURIComponent(sessionID)}/form`))
-    const getForm = async (sessionID, formID) =>
-      valueOf(
-        await apiJson(
-          `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}`,
-        ),
-      )
-    const replyForm = async (sessionID, formID, answer) => {
-      await apiJson(
-        `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ answer }),
-        },
-      )
-    }
+    const formPath = (id, formId) =>
+      `/api/session/${encodeURIComponent(id)}/form/${encodeURIComponent(formId)}`
     const replyToRequest = async (message) => {
-      const context = published.get(message.id)
-      if (!context || pendingReplies.has(message.id)) return
-      const response = message.response ?? {}
-      if (response.decision === 'native') {
+      const entry = published.get(message.id)
+      if (!entry || pendingReplies.has(message.id)) return
+      if (message.response?.decision === 'native') {
         nativeRequests.add(message.id)
-        controls?.send({ op: 'result', id: message.id, ok: true })
         published.delete(message.id)
-        formClaims.delete(message.id)
+        controlSend({ op: 'result', id: message.id, ok: true })
         return
       }
+      const { request, kind } = entry
+      const id = request.sessionID
+      const stillPending = (signal) =>
+        !disposed &&
+        !signal.aborted &&
+        controlEnabled &&
+        !deleted.has(id) &&
+        published.get(message.id) === entry &&
+        requests.has(message.id)
       pendingReplies.add(message.id)
       try {
-        if (context.kind === 'permission') {
-          const current = valueOf(
-            await ctx.permission.get({ sessionID: context.sessionId, requestID: message.id }),
-          )
-          if (current?.id !== message.id || current.sessionID !== context.sessionId) {
-            controls?.send({ op: 'resolved', id: message.id })
-            published.delete(message.id)
-            formClaims.delete(message.id)
-            return
-          }
-          if (!['allow', 'reject'].includes(response.decision)) throw new Error('Invalid response')
-          await ctx.permission.reply({
-            sessionID: context.sessionId,
-            requestID: message.id,
-            reply: response.decision === 'allow' ? 'once' : 'reject',
-          })
-        } else {
-          if (!Array.isArray(response.answers)) throw new Error('Invalid form answer')
-          const current = await getForm(context.sessionId, context.formId)
+        await bounded(async (signal) => {
+          const currentRequest =
+            kind === 'permission'
+              ? valueOf(
+                  await ctx.permission.get({ sessionID: id, requestID: message.id }, { signal }),
+                )
+              : await apiJson(formPath(id, message.id), signal)
+          if (!stillPending(signal)) return
           if (
-            current?.id !== context.formId ||
-            current.sessionID !== context.sessionId ||
-            current.state?.status !== 'pending'
+            currentRequest?.id !== message.id ||
+            currentRequest.sessionID !== id ||
+            (kind === 'question' && currentRequest.state?.status !== 'pending')
           ) {
-            controls?.send({ op: 'resolved', id: message.id })
-            published.delete(message.id)
-            formClaims.delete(message.id)
+            resolveRequest(message.id, id, kind)
             return
           }
-          const answer = {}
-          for (let index = 0; index < context.questions.length; index++) {
-            const field = current.fields?.[index]
-            const values = response.answers[index]
-            if (!field || typeof field.key !== 'string' || !Array.isArray(values))
-              throw new Error('Invalid form answer')
-            const convert = (selected) => {
-              if (field.type === 'boolean') return selected === 'Yes'
-              const option = field.options?.find((candidate) => candidate.label === selected)
-              return option?.value ?? selected
-            }
-            const selected = values.map(convert)
-            if (field.type === 'multiselect') answer[field.key] = selected
-            else if (field.type === 'boolean') answer[field.key] = selected[0] === true
-            else if (field.type === 'integer' || field.type === 'number') {
-              const parsed = Number(selected[0])
-              if (
-                !Number.isFinite(parsed) ||
-                (field.type === 'integer' && !Number.isInteger(parsed))
-              )
-                throw new Error('Invalid numeric form answer')
-              answer[field.key] = parsed
-            } else answer[field.key] = selected[0] ?? ''
+          if (kind === 'permission') {
+            if (!['allow', 'reject'].includes(message.response?.decision))
+              throw new Error('Invalid response')
+            // V2.0.29 calls this input `decision`; `reply` is the emitted event field.
+            await ctx.permission.reply(
+              {
+                sessionID: id,
+                requestID: message.id,
+                decision: message.response.decision === 'allow' ? 'once' : 'reject',
+              },
+              { signal },
+            )
+          } else {
+            if (JSON.stringify(currentRequest.fields) !== JSON.stringify(request.fields))
+              throw new Error('The form changed; answer it in OpenCode')
+            const answer = formAnswer(currentRequest, message.response?.answers)
+            await apiJson(`${formPath(id, message.id)}/reply`, signal, { answer })
           }
-          await replyForm(context.sessionId, context.formId, answer)
-        }
-        controls?.send({ op: 'result', id: message.id, ok: true })
-        published.delete(message.id)
-        formClaims.delete(message.id)
-        void reconcile()
+          if (!stillPending(signal)) return
+          touch(id)
+          controlSend({ op: 'result', id: message.id, ok: true })
+          published.delete(message.id)
+          resolveRequest(message.id, id, kind)
+        }, 5000)
       } catch {
-        controls?.send({ op: 'result', id: message.id, ok: false })
-        void reconcile()
+        if (published.get(message.id) === entry)
+          controlSend({ op: 'result', id: message.id, ok: false })
       } finally {
         pendingReplies.delete(message.id)
+        scheduleReconcile()
       }
     }
-
+    const resolveRequest = (requestID, id, kind) => {
+      requests.delete(requestID)
+      recheck.add(id)
+      retire(requestID)
+      send(kind === 'permission' ? 'permission.replied' : 'form.replied', id, { requestID })
+    }
     const connectControlChannel = () => {
       if (disposed || controlConnected) return
       controlConnected = true
@@ -300,55 +313,38 @@ export default Plugin.define({
           if (message.op === 'ready') {
             const changed = controlEnabled !== (message.enabled === true)
             controlEnabled = message.enabled === true
-            if (changed && controlEnabled) void reconcile()
+            if (changed && controlEnabled) {
+              for (const entry of requests.values()) publishRequest(entry)
+              scheduleReconcile()
+            }
           } else if (message.op === 'reply') void replyToRequest(message)
-          else if (message.op === 'retired') {
-            published.delete(message.id)
-            formClaims.delete(message.id)
-          } else if (message.op === 'disabled') controlEnabled = false
+          else if (message.op === 'retired') published.delete(message.id)
+          else if (message.op === 'disabled') {
+            controlEnabled = false
+            published.clear()
+          }
         },
         () => {
           controlConnected = false
           controlEnabled = false
-          for (const id of published.keys()) formClaims.delete(id)
           published.clear()
         },
       )
     }
 
-    const formQuestions = (form) => {
-      if (!Array.isArray(form.fields) || form.fields.length > 16) return null
-      const questions = []
-      for (const field of form.fields) {
-        if (
-          !field ||
-          !['string', 'multiselect', 'boolean', 'integer', 'number'].includes(field.type)
-        )
-          return null
-        const options =
-          field.type === 'boolean'
-            ? [
-                { label: 'Yes', description: '' },
-                { label: 'No', description: '' },
-              ]
-            : Array.isArray(field.options)
-              ? field.options.map((option) => ({
-                  label: option.label,
-                  description: option.description ?? '',
-                }))
-              : []
-        const custom = field.type === 'boolean' ? false : field.custom !== false
-        questions.push({
-          text: field.description ?? field.title ?? form.title ?? 'Please provide an answer.',
-          header: field.title ?? '',
-          multiple: field.type === 'multiselect',
-          custom,
-          options,
-        })
+    // A failed list is unknown, not empty. Reconcile each request kind only
+    // after a complete successful read, even when companion replies are off.
+    const readList = async (operation) => {
+      try {
+        const list = valueOf(await operation())
+        return Array.isArray(list) &&
+          list.every((p) => typeof p?.id === 'string' && typeof p.sessionID === 'string')
+          ? list
+          : null
+      } catch {
+        return null
       }
-      return questions
     }
-
     const reconcile = async () => {
       if (disposed) return
       if (recovering) {
@@ -356,176 +352,215 @@ export default Plugin.define({
         return
       }
       recovering = true
+      const before = revision
       try {
-        let live = new Set(active)
-        if (typeof ctx.session.active === 'function') {
-          try {
-            const activeResponse = valueOf(await ctx.session.active())
-            const statuses =
-              activeResponse && typeof activeResponse === 'object' ? activeResponse : {}
-            live = new Set(Object.keys(statuses))
-          } catch {
-            // Some V2 plugin contexts omit the active-session endpoint.
-          }
-        }
-        for (const id of live) {
-          if (!known.has(id) && typeof ctx.session.get === 'function') {
-            try {
-              const info = valueOf(await ctx.session.get({ sessionID: id }))
-              if (info?.id === id)
-                known.set(id, {
-                  cwd: info.directory ?? ctx.location.directory,
-                  parentId: info.parentID,
-                  title: info.title,
-                })
-            } catch {
-              /* Metadata may disappear while a session exits. */
-            }
-          }
-          send('buddy.reconcile', { sessionID: id, status: { type: 'busy' } })
-        }
-        for (const id of active)
-          if (!live.has(id)) {
-            send('buddy.reconcile', { sessionID: id, status: { type: 'idle' } })
-            active.delete(id)
-          }
-
-        if (controlEnabled) {
-          const requests = []
-          for (const sessionID of live) {
-            try {
-              const permissions = valueOf(await ctx.permission.list({ sessionID }))
-              if (Array.isArray(permissions))
-                requests.push(...permissions.map((request) => ({ request, kind: 'permission' })))
-            } catch {
-              /* Keep event-driven tracking available if request APIs differ. */
-            }
-            try {
-              const forms = await listForms(sessionID)
-              if (Array.isArray(forms))
-                for (const form of forms) {
-                  const questions = formQuestions(form)
-                  if (questions) requests.push({ request: form, kind: 'question', questions })
+        await bounded(async (signal) => {
+          const location = encodeURIComponent(JSON.stringify({ directory: ctx.location.directory }))
+          const [live, permissions, forms] = await Promise.all([
+            (async () => {
+              try {
+                const result = valueOf(
+                  typeof ctx.session.active === 'function'
+                    ? await ctx.session.active(undefined, { signal })
+                    : await apiJson('/api/session/active', signal),
+                )
+                return result && typeof result === 'object' && !Array.isArray(result)
+                  ? new Set(Object.keys(result))
+                  : null
+              } catch {
+                return null
+              }
+            })(),
+            readList(() => apiJson(`/api/permission/request?location=${location}`, signal)),
+            readList(() => apiJson(`/api/form?location=${location}`, signal)),
+          ])
+          if (signal.aborted || disposed) return
+          const ids = new Set([
+            ...active,
+            ...(live ?? []),
+            ...recheck,
+            ...[...requests.values()].map((p) => p.request.sessionID),
+            ...(permissions ?? []).map((p) => p.sessionID),
+            ...(forms ?? []).map((p) => p.sessionID),
+          ])
+          await Promise.all([...ids].map((id) => recoverMetadata(id)))
+          if (signal.aborted || disposed) return
+          for (const id of ids) {
+            if (!current(id, before, signal)) continue
+            const hadRequests = [...requests.values()].some((p) => p.request.sessionID === id)
+            // The active endpoint is process-wide. Never attribute a different
+            // directory's sessions to this location-scoped plugin instance.
+            if (known.get(id)?.cwd !== ctx.location.directory) continue
+            let permissionList = permissions
+            if (permissionList === null && typeof ctx.permission?.list === 'function')
+              permissionList = await readList(() =>
+                ctx.permission.list({ sessionID: id }, { signal }),
+              )
+            if (!current(id, before, signal)) continue
+            for (const [kind, list] of [
+              ['permission', permissionList],
+              ['question', forms],
+            ]) {
+              if (list === null) continue
+              const pending = list.filter((p) => p.sessionID === id)
+              const pendingIds = new Set(pending.map((p) => p.id))
+              for (const [requestID, entry] of requests)
+                if (
+                  entry.kind === kind &&
+                  entry.request.sessionID === id &&
+                  !pendingIds.has(requestID)
+                )
+                  resolveRequest(requestID, id, kind)
+              for (const request of pending) {
+                if (!requests.has(request.id)) {
+                  requests.set(request.id, { request, kind })
                 }
-            } catch {
-              /* Form support is optional for sessions without forms. */
+                send(kind === 'permission' ? 'permission.asked' : 'form.created', id, request)
+                publishRequest(requests.get(request.id))
+              }
+            }
+            if (live) {
+              const wasActive = active.has(id)
+              if (live.has(id)) active.add(id)
+              else active.delete(id)
+              if (
+                live.has(id) ||
+                wasActive ||
+                hadRequests ||
+                recheck.has(id) ||
+                [...requests.values()].some((p) => p.request.sessionID === id)
+              )
+                send(
+                  'buddy.reconcile',
+                  id,
+                  { status: live.has(id) ? 'busy' : 'idle' },
+                  permissionList !== null && forms !== null
+                    ? {
+                        attention: [...requests.values()]
+                          .filter((p) => p.request.sessionID === id)
+                          .map((p) => ({ id: p.request.id, kind: p.kind }))
+                          .slice(-32),
+                      }
+                    : {},
+                )
+              recheck.delete(id)
             }
           }
-          const ids = new Set(requests.map(({ request }) => request.id))
-          for (const id of nativeRequests) if (!ids.has(id)) nativeRequests.delete(id)
-          for (const id of published.keys())
-            if (!ids.has(id)) {
-              controls?.send({ op: 'resolved', id })
-              published.delete(id)
-              formClaims.delete(id)
-            }
-          for (const { request, kind, questions } of requests)
-            if (!nativeRequests.has(request.id)) publishRequest(request, kind, questions)
-        }
+        }, 5000)
       } catch {
-        // OpenCode can restart or disconnect; live events resume reconciliation.
+        /* Keep last evidence; a failed read never refreshes cached activity. */
       } finally {
         recovering = false
-        if (!disposed && reconcileAgain) {
+        if (reconcileAgain) {
           reconcileAgain = false
-          void reconcile()
+          scheduleReconcile()
         }
       }
     }
-
-    const timer = setInterval(() => void reconcile(), 15_000)
+    function scheduleReconcile() {
+      if (disposed || reconcileTimer) return
+      reconcileTimer = setTimeout(() => {
+        reconcileTimer = undefined
+        void reconcile()
+      }, 100)
+      reconcileTimer.unref?.()
+    }
+    const onEvent = (event) => {
+      if (disposed || !watched.has(event.type)) return
+      if (event.location?.directory && event.location.directory !== ctx.location.directory) return
+      if (typeof event.id === 'string') {
+        if (seen.has(event.id)) return
+        seen.add(event.id)
+        if (seen.size > 512) seen.delete(seen.values().next().value)
+      }
+      const p = event.data ?? event.properties ?? {}
+      const request = p.form ?? p
+      const id = askEvents.has(event.type) ? request.sessionID : sessionId(p)
+      if (typeof id !== 'string' || deleted.has(id)) return
+      touch(id)
+      const info = p.info ?? p.session ?? (metadataEvents.has(event.type) ? p : null)
+      if (info) remember(id, info)
+      if (!known.has(id)) known.set(id, { cwd: ctx.location.directory })
+      if (workingEvents.has(event.type)) active.add(id)
+      else if (terminalEvents.has(event.type)) active.delete(id)
+      else if (event.type === 'session.status') {
+        const status = p.status?.type ?? p.status
+        if (['busy', 'running', 'retry'].includes(status)) active.add(id)
+        else if (status === 'idle') active.delete(id)
+      }
+      send(event.type, id, askEvents.has(event.type) ? request : p, {
+        id: event.id ?? randomUUID(),
+      })
+      if (event.type === 'session.deleted') {
+        deleted.add(id)
+        active.delete(id)
+        recheck.delete(id)
+        known.delete(id)
+        metadataLoaded.delete(id)
+        generations.delete(id)
+        for (const [requestID, entry] of requests)
+          if (entry.request.sessionID === id) {
+            requests.delete(requestID)
+            retire(requestID)
+          }
+        return
+      }
+      void recoverMetadata(id)
+      const kind = askEvents.get(event.type)
+      if (kind && typeof request.id === 'string') {
+        const entry = { request, kind }
+        requests.set(request.id, entry)
+        publishRequest(entry)
+      }
+      if (resolveEvents.has(event.type)) {
+        const requestID = requestId(p)
+        requests.delete(requestID)
+        retire(requestID)
+        recheck.add(id)
+        scheduleReconcile()
+      }
+    }
+    const subscribe = async () => {
+      const started = Date.now()
+      try {
+        const events = ctx.event.subscribe({ signal: lifetime.signal })
+        // Start consumption before reading snapshots so in-flight events can
+        // invalidate them. Do not await metadata or HTTP inside the stream.
+        scheduleReconcile()
+        for await (const event of events) {
+          if (disposed) break
+          if (event.type === 'server.connected') scheduleReconcile()
+          onEvent(event)
+        }
+      } catch {
+        /* Reopen live-only subscriptions; they do not reconnect themselves. */
+      }
+      if (disposed) return
+      if (Date.now() - started >= 30_000) retryDelay = 1000
+      reconnectTimer = setTimeout(() => void subscribe(), retryDelay)
+      reconnectTimer.unref?.()
+      retryDelay = Math.min(retryDelay * 2, 30_000)
+    }
+    const timer = setInterval(scheduleReconcile, 15_000)
     timer.unref?.()
     const controlTimer = setInterval(() => {
       connectControlChannel()
-      controls?.send({ op: 'ping' })
+      controlSend({ op: 'ping' })
     }, 15_000)
     controlTimer.unref?.()
     connectControlChannel()
-    void reconcile()
-
-    void (async () => {
-      try {
-        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          if (disposed || !watched.has(event.type)) continue
-          if (event.location?.directory && event.location.directory !== ctx.location.directory)
-            continue
-          const properties = event.properties ?? event.data ?? {}
-          const form = properties.form ?? properties
-          const sessionId = properties.sessionID ?? properties.info?.id ?? form.sessionID
-          if (typeof sessionId === 'string') {
-            if (
-              [
-                'session.step.started',
-                'session.step.ended',
-                'session.tool.called',
-                'session.tool.progress',
-                'session.tool.success',
-                'session.tool.error',
-                'session.execution.started',
-                'session.retry.scheduled',
-              ].includes(event.type)
-            )
-              active.add(sessionId)
-            else if (event.type === 'session.status') {
-              const status = properties.status?.type ?? properties.status
-              if (['busy', 'running', 'retry'].includes(status)) active.add(sessionId)
-              else if (status === 'idle') active.delete(sessionId)
-            } else if (
-              [
-                'session.idle',
-                'session.deleted',
-                'session.execution.succeeded',
-                'session.execution.failed',
-                'session.execution.interrupted',
-              ].includes(event.type)
-            )
-              active.delete(sessionId)
-          }
-          send(event.type, event.type === 'form.created' ? form : properties, event.id)
-          if (['permission.asked', 'permission.v2.asked'].includes(event.type))
-            publishRequest(properties, 'permission')
-          else if (event.type === 'question.asked')
-            publishRequest(properties, 'question', properties.questions ?? [])
-          else if (event.type === 'form.created' || event.type === 'session.form.created') {
-            const form = properties.form ?? properties
-            const questions = formQuestions(form)
-            if (questions) publishRequest(form, 'question', questions)
-          }
-          if (
-            [
-              'permission.replied',
-              'permission.v2.replied',
-              'question.replied',
-              'question.rejected',
-              'form.replied',
-              'form.cancelled',
-              'session.form.answered',
-              'session.form.cancelled',
-            ].includes(event.type)
-          ) {
-            const id =
-              properties.requestID ?? properties.permissionID ?? properties.formID ?? properties.id
-            if (typeof id === 'string') {
-              controls?.send({ op: 'resolved', id })
-              published.delete(id)
-              nativeRequests.delete(id)
-            }
-            void reconcile()
-          }
-          if (event.type === 'session.deleted')
-            active.delete(properties.sessionID ?? properties.info?.id)
-        }
-      } catch {
-        // OpenCode can stop the stream during plugin unload or server restart.
-      }
-    })()
-
+    void subscribe()
     return () => {
+      if (disposed) return
       disposed = true
       clearInterval(timer)
       clearInterval(controlTimer)
-      controller.abort()
+      clearTimeout(reconcileTimer)
+      clearTimeout(reconnectTimer)
+      lifetime.abort()
       controls?.close()
+      published.clear()
+      requests.clear()
     }
   },
 })
