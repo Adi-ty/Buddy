@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, LoaderCircle, Pause, Play, Send } from 'lucide-react'
+import { Check, Copy, LoaderCircle, Pause, Play, Send, Unplug } from 'lucide-react'
 import type { TelegramPairing, TelegramStatus } from '@shared/telegram'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { ConfirmDialog } from './ui/confirm-dialog'
 import { Notice } from './ui/notice'
 
 const states = {
@@ -33,6 +34,7 @@ export function TelegramSettings({ status }: { status?: TelegramStatus }) {
   const [pairing, setPairing] = useState<TelegramPairing | null>(null)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const [now, setNow] = useState(Date.now())
   const paired = Boolean(status?.botUsername && status.pairedUser)
   const pairingReady = status?.state === 'pairing'
@@ -110,6 +112,24 @@ export function TelegramSettings({ status }: { status?: TelegramStatus }) {
       className="overflow-hidden rounded-2xl border border-border bg-card"
       aria-label="Telegram companion"
     >
+      {confirmDisconnect && (
+        <ConfirmDialog
+          title="Disconnect Telegram?"
+          action="Disconnect"
+          pending={pending !== null}
+          onCancel={() => setConfirmDisconnect(false)}
+          onConfirm={() =>
+            void act('disconnect', async () => {
+              await window.buddy.disconnectTelegram()
+              setPairing(null)
+              setConfirmDisconnect(false)
+            })
+          }
+        >
+          Telegram notifications and replies will stop. You’ll need to pair again to reconnect.
+          <Notice className="mt-3" message={error ? { error: true, text: error } : null} />
+        </ConfirmDialog>
+      )}
       <div className="flex flex-wrap items-center gap-3 p-5">
         <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-secondary text-foreground">
           <Send className="size-5" aria-hidden="true" />
@@ -318,7 +338,7 @@ export function TelegramSettings({ status }: { status?: TelegramStatus }) {
             </fieldset>
           </>
         )}
-        {(!needsAttention || error !== setupFailure) && (
+        {!confirmDisconnect && (!needsAttention || error !== setupFailure) && (
           <Notice message={error ? { error: true, text: error } : null} />
         )}
       </div>
@@ -340,16 +360,15 @@ export function TelegramSettings({ status }: { status?: TelegramStatus }) {
               </Button>
             )}
             <Button
-              variant="ghost"
+              variant="danger"
               size="sm"
               disabled={disabled}
-              onClick={() =>
-                void act('disconnect', async () => {
-                  await window.buddy.disconnectTelegram()
-                  setPairing(null)
-                })
-              }
+              onClick={() => {
+                setError(null)
+                setConfirmDisconnect(true)
+              }}
             >
+              <Unplug aria-hidden="true" />
               {pending === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
             </Button>
           </div>
