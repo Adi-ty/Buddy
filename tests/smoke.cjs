@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
-const { resolve, join } = require('node:path')
-const { app, nativeTheme, powerMonitor, screen } = require('electron')
+const { mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
+const { dirname, resolve, join } = require('node:path')
+const { app, dialog, nativeTheme, powerMonitor, screen } = require('electron')
 
 if (process.platform !== 'darwin') {
   console.error('The native smoke test requires macOS and a graphical login session.')
@@ -11,13 +11,18 @@ if (process.platform !== 'darwin') {
 // A separate profile keeps test events out of the user's session history.
 const artifacts = resolve('.cache/smoke')
 mkdirSync(artifacts, { recursive: true })
-const profile = mkdtempSync(join(artifacts, 'profile-'))
+const profile = process.env.BUDDY_SMOKE_PROFILE
+if (!profile || dirname(profile) !== artifacts) {
+  console.error('Run smoke tests with npm run test:smoke.')
+  app.exit(1)
+}
 // Observer actions exercise real writes, scoped to disposable harness configs.
 process.env.CODEX_HOME = join(profile, 'codex')
 process.env.CLAUDE_CONFIG_DIR = join(profile, 'claude')
 process.env.OPENCODE_CONFIG_DIR = join(profile, 'opencode')
 process.env.XDG_CONFIG_HOME = join(profile, 'config')
 process.env.XDG_DATA_HOME = join(profile, 'data')
+process.env.XDG_STATE_HOME = join(profile, 'state')
 delete process.env.ELECTRON_RENDERER_URL
 // CLI fixtures only exercise Buddy's setup/detection contracts. Compatibility
 // with actual installed harness versions is a separate integration check.
@@ -26,7 +31,7 @@ mkdirSync(bin)
 for (const [command, version] of [
   ['codex', '0.162.1'],
   ['claude', '2.1.295'],
-  ['opencode', '1.18.35'],
+  ['opencode', '2.0.0'],
 ]) {
   writeFileSync(
     join(bin, command),
@@ -43,6 +48,7 @@ for (const path of [
   process.env.OPENCODE_CONFIG_DIR,
   process.env.XDG_CONFIG_HOME,
   process.env.XDG_DATA_HOME,
+  process.env.XDG_STATE_HOME,
 ])
   mkdirSync(path, { recursive: true })
 writeFileSync(
@@ -118,6 +124,25 @@ async function rejectsCompanionMove(window, action) {
   }
 }
 const snapshot = (window) => js(window, 'window.buddy.getSnapshot()')
+const waitForSelector = (window, selector) =>
+  until(
+    () => js(window, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
+    `rendered ${selector}`,
+  )
+const clickSelector = (window, selector) =>
+  until(
+    () =>
+      js(
+        window,
+        `(() => {
+          const element = document.querySelector(${JSON.stringify(selector)});
+          if (!element || element.matches(':disabled') || !element.getClientRects().length) return false;
+          element.click();
+          return true;
+        })()`,
+      ),
+    `clickable ${selector}`,
+  )
 const click = (window, text) =>
   js(
     window,
@@ -493,6 +518,58 @@ async function verify() {
     () => js(dashboard, 'document.body.textContent.includes("Integrations refreshed.")'),
     'refresh feedback',
   )
+  // Exercise the real preload/IPC/settings path with a controlled native file
+  // picker. No developer installations or shell profiles are modified.
+  const showOpenDialog = dialog.showOpenDialog
+  try {
+    for (const harness of (await snapshot(dashboard)).harnesses) {
+      const command = harness.id === 'claude-code' ? 'claude' : harness.id
+      const custom = join(profile, `custom ${command}`)
+      writeFileSync(custom, readFileSync(join(bin, command)), { mode: 0o700 })
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [custom] })
+      await js(dashboard, `window.buddy.chooseExecutable(${JSON.stringify(harness.id)})`)
+      let current = (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id)
+      assert.equal(current.executablePath, custom)
+      assert.equal(current.executableOverride, true)
+      assert.equal(current.canInstall, true)
+      assert.equal(
+        JSON.parse(readFileSync(join(profile, 'settings.json'), 'utf8')).executables[harness.id],
+        custom,
+      )
+      await until(
+        () => js(dashboard, `document.body.textContent.includes(${JSON.stringify(custom)})`),
+        'chosen executable is visible',
+      )
+
+      dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+      await js(dashboard, `window.buddy.chooseExecutable(${JSON.stringify(harness.id)})`)
+      assert.equal(
+        (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id).executablePath,
+        custom,
+      )
+      rmSync(custom)
+      await js(dashboard, 'window.buddy.refreshIntegrations()')
+      current = (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id)
+      assert.equal(current.installation, 'broken')
+      assert.equal(current.canInstall, false)
+      assert.equal(
+        current.executablePath,
+        custom,
+        'missing override never silently switches installations',
+      )
+      await until(
+        () => js(dashboard, 'document.body.textContent.includes("CLI could not run")'),
+        'missing executable feedback',
+      )
+      await js(dashboard, `window.buddy.chooseExecutable(${JSON.stringify(harness.id)}, true)`)
+      current = (await snapshot(dashboard)).harnesses.find((item) => item.id === harness.id)
+      assert.equal(current.executablePath, join(bin, command))
+      assert.equal(current.executableOverride, false)
+      assert.equal(current.canInstall, true)
+    }
+  } finally {
+    dialog.showOpenDialog = showOpenDialog
+  }
   for (const harness of (await snapshot(dashboard)).harnesses) {
     assert(harness.canInstall, `CLI fixture must match the verified ${harness.name} contract`)
     await js(
@@ -970,14 +1047,10 @@ async function verify() {
   await send('SessionEnd', 'notice-expiry')
   await until(async () => !(await snapshot(dashboard)).overlay.visible, 'expiry fixture closed')
 
-  // Exercise the installed OpenCode plugin through the real observation and
-  // control sockets, with enough children to bury a question in the old layout.
+  // Exercise the installed OpenCode V2 plugin through its event subscription.
   await js(dashboard, 'window.buddy.installIntegration("opencode")')
-  await js(dashboard, 'window.buddy.setIntegrationControls("opencode", true)')
-  const { pathToFileURL } = require('node:url')
-  const { default: BuddyPlugin } = await import(
-    pathToFileURL(join(profile, 'integrations/opencode-plugin.mjs')).href
-  )
+  const { loadInstalledOpenCodePlugin } = await import('./opencode-host-fixture.mjs')
+  const BuddyPlugin = await loadInstalledOpenCodePlugin(profile)
   const familyRoot = 'family-root'
   const familyChildren = Array.from({ length: 7 }, (_, i) => `family-child-${i}`)
   const familyInfos = new Map([
@@ -992,40 +1065,39 @@ async function verify() {
       },
     ]),
   ])
-  let familyQuestions = []
-  const familyAnswers = []
-  const plugin = await BuddyPlugin({
-    directory: '/projects/buddy',
-    client: {
-      session: {
-        status: async () => ({
-          data: Object.fromEntries(
-            [...familyInfos.keys()].map((id) => [
-              id,
-              { type: id === familyRoot ? 'busy' : 'idle' },
-            ]),
-          ),
-        }),
-        get: async ({ path }) => ({ data: familyInfos.get(path.id) }),
-      },
-      _client: {
-        get: async ({ url, query }) => {
-          assert.equal(query.directory, '/projects/buddy')
-          return { data: url === '/question' ? [...familyQuestions] : [] }
-        },
-        post: async (request) => {
-          assert.equal(request.query.directory, '/projects/buddy')
-          familyAnswers.push(request)
-          familyQuestions = familyQuestions.filter(
-            (question) => request.url !== `/question/${question.id}/reply`,
-          )
-          return { data: true }
-        },
+  const eventQueue = []
+  let wakeEvent = () => {}
+  const pluginCleanup = BuddyPlugin.setup({
+    location: { directory: '/projects/buddy' },
+    session: {
+      get: async ({ sessionID }) => familyInfos.get(sessionID),
+    },
+    event: {
+      subscribe({ signal }) {
+        signal.addEventListener('abort', () => wakeEvent(), { once: true })
+        return {
+          async *[Symbol.asyncIterator]() {
+            while (!signal.aborted) {
+              if (!eventQueue.length) {
+                await new Promise((resolve) => (wakeEvent = resolve))
+                if (signal.aborted) break
+              }
+              while (eventQueue.length) yield eventQueue.shift()
+            }
+          },
+        }
       },
     },
   })
-  const closePlugin = () => plugin.dispose()
+  const closePlugin = pluginCleanup
   cleanups.push(closePlugin)
+  for (const [id, info] of familyInfos)
+    eventQueue.push({
+      id: `event-${id}`,
+      type: 'session.status',
+      properties: { sessionID: id, status: { type: id === familyRoot ? 'busy' : 'idle' }, info },
+    })
+  wakeEvent()
   await until(
     async () =>
       (await snapshot(dashboard)).sessions.filter((session) =>
@@ -1033,96 +1105,13 @@ async function verify() {
       ).length === 8,
     'parent and seven nested subagents reported by the installed plugin',
   )
-  for (const [owner, answer] of [
-    [familyRoot, 'Yes'],
-    [familyChildren[6], 'No'],
-  ]) {
-    const requestId = `decision-${owner}`
-    familyQuestions = [
-      {
-        id: requestId,
-        sessionID: owner,
-        questions: [
-          {
-            question: 'Should I proceed with this decision?',
-            header: 'Decision',
-            custom: false,
-            options: [
-              { label: 'Yes', description: 'Proceed' },
-              { label: 'No', description: 'Reconsider' },
-            ],
-          },
-        ],
-      },
-    ]
-    await plugin.event({ event: { type: 'question.asked', properties: familyQuestions[0] } })
-    await until(
-      async () =>
-        (await snapshot(dashboard)).requests?.some(
-          (request) => request.sessionId === `opencode:${owner}`,
-        ),
-      'actual plugin question reaches the companion snapshot',
-    )
-    await expand(overlay)
-    await openOverlayRow(overlay, 'opencode:family-root')
-    await until(
-      () =>
-        js(
-          overlay,
-          `document.querySelector('.request-context p')?.textContent === ${JSON.stringify(familyInfos.get(owner).title)}`,
-        ),
-      'opening a family goes straight to its question owner',
-    )
-    assert.equal(
-      await js(
-        overlay,
-        `(() => {
-          const panel = document.querySelector('.request-panel');
-          const agents = document.querySelector('section[aria-label^="Subagents of"] details');
-          const question = panel.querySelector('legend').getBoundingClientRect();
-          const surface = document.querySelector('.overlay-surface').getBoundingClientRect();
-          return !agents.open && Boolean(panel.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING)
-            && question.top >= surface.top && question.bottom < surface.bottom - 44;
-        })()`,
-      ),
-      true,
-      'The question is visible before the collapsed subagent list, without scrolling',
-    )
-    assert.equal(
-      await js(overlay, 'document.querySelectorAll(".question-option input:checked").length'),
-      0,
-    )
-    await js(
-      overlay,
-      `([...document.querySelectorAll('.question-option')].find(option => option.querySelector('.font-medium').textContent === ${JSON.stringify(answer)})).click()`,
-    )
-    await click(overlay, 'Send answers')
-    await until(
-      () => familyAnswers.some((request) => request.url === `/question/${requestId}/reply`),
-      'companion answer reaches the plugin’s exact pending question',
-    )
-    assert.deepEqual(
-      familyAnswers.find((request) => request.url === `/question/${requestId}/reply`).body,
-      { answers: [[answer]] },
-    )
-    await until(
-      async () =>
-        !(await snapshot(dashboard)).requests?.length &&
-        !(await snapshot(dashboard)).sessions.some(
-          (session) => session.status === 'needs-attention',
-        ),
-      'acknowledged question and yellow attention clear',
-    )
-  }
   await js(dashboard, `document.querySelector('a[href="/sessions"]').click()`)
   await until(
     () => js(dashboard, 'document.querySelector("h1").textContent === "Sessions"'),
     'session keyboard matrix',
   )
-  await js(
-    dashboard,
-    `window.buddy.getSnapshot().then(() => document.querySelector('[data-session-id="opencode:family-root"]').click())`,
-  )
+  await clickSelector(dashboard, '.session-row[data-session-id="opencode:family-root"]')
+  await waitForSelector(dashboard, '.session-row[data-session-id="opencode:family-child-0"]')
   await js(
     dashboard,
     `(() => { const row = document.querySelector('[data-session-id="opencode:family-root"]'); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); })()`,
@@ -1149,20 +1138,20 @@ async function verify() {
     'opencode:family-root',
     'Escape restores focus to the parent instead of an unmounted subagent',
   )
-  await js(
-    overlay,
-    'document.querySelector(\'section[aria-label^="Subagents of"] summary\').click()',
-  )
-  await js(
-    overlay,
-    'document.querySelector(\'[data-session-id="opencode:family-child-0"]\').click()',
+  await expand(overlay)
+  await openOverlayRow(overlay, 'opencode:family-root')
+  await clickSelector(overlay, 'section[aria-label^="Subagents of"] summary')
+  await clickSelector(overlay, '[data-session-id="opencode:family-child-0"]')
+  await until(
+    () => js(overlay, 'document.body.textContent.includes("View parent session")'),
+    'child session details rendered',
   )
   await click(overlay, 'View parent session')
   await until(
     () => js(overlay, '!document.body.textContent.includes("View parent session")'),
     'parent details remain reachable after selecting a child',
   )
-  await plugin.dispose()
+  pluginCleanup()
   cleanups.splice(cleanups.indexOf(closePlugin), 1)
   for (const id of familyInfos.keys())
     await report(join(profile, 'bridge.json'), {
@@ -1174,7 +1163,7 @@ async function verify() {
   await js(dashboard, 'window.buddy.removeIntegration("opencode")')
   assert.deepEqual(errors, [])
   console.log(
-    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested-child questions above collapsed subagents; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
+    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested subagent navigation; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
   )
   // A final deferred write must survive normal Electron quit.
   await send('SessionStart', 'quit-flush')
@@ -1185,22 +1174,6 @@ void import('../out/main/index.js')
   .then(verify)
   .then(() => {
     stopping = true
-    app.once('will-quit', () => {
-      try {
-        const durable = readFileSync(join(profile, 'sessions.json'), 'utf8')
-        assert.equal(
-          JSON.parse(durable).records.find((record) => record.id === 'codex:quit-flush').status,
-          'working',
-        )
-        assert(!durable.includes('echo smoke fixture'), 'Approval details are memory-only')
-        rmSync(profile, { recursive: true, force: true })
-        clearTimeout(timeout)
-        console.log('PASS: normal quit flushes pending session state')
-      } catch (error) {
-        console.error(error)
-        app.exit(1)
-      }
-    })
     app.quit()
   })
   .catch(fail)

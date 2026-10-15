@@ -6,12 +6,16 @@ export const opencode: HarnessAdapter = {
   id: 'opencode',
   name: 'OpenCode',
   shortLabel: 'OC',
-  description: 'Local plugin events first. Server connections have their own coverage.',
+  description: 'OpenCode V2 plugin event tracking.',
   source: 'plugin',
   installMode: 'plugin',
   pluginAsset: 'opencode-plugin.mjs',
   cli: { command: 'opencode', extraPaths: [join(homedir(), '.opencode/bin')] },
-  compat: { verified: '1.18.35' },
+  compat: {
+    verified: '2.x',
+    matches: (version) => /^2\./.test(version),
+    supports: (version) => /^2\./.test(version),
+  },
   target: ({ development }) =>
     join(
       process.env.OPENCODE_CONFIG_DIR ||
@@ -37,7 +41,7 @@ export const opencode: HarnessAdapter = {
         break
       case 'session.status':
       case 'buddy.reconcile': {
-        if (!['busy', 'idle', 'retry'].includes(String(p.status))) return null
+        if (!['busy', 'idle', 'retry', 'running'].includes(String(p.status))) return null
         result = {
           status: p.status === 'idle' ? 'idle' : 'working',
           action: 'observe',
@@ -61,6 +65,30 @@ export const opencode: HarnessAdapter = {
         }
         break
       }
+      case 'session.step.started':
+      case 'session.step.ended':
+      case 'session.tool.called':
+      case 'session.tool.progress':
+      case 'session.tool.success':
+      case 'session.tool.error':
+      case 'session.execution.started':
+      case 'session.retry.scheduled':
+        result = { status: 'working', action: 'observe', turnActive: true }
+        break
+      case 'session.execution.succeeded':
+        result = {
+          status: 'completed',
+          action: 'observe',
+          preserveErrorOnCompletion: true,
+          turnActive: false,
+        }
+        break
+      case 'session.execution.failed':
+        result = { status: 'error', action: 'observe', turnActive: false }
+        break
+      case 'session.execution.interrupted':
+        result = { status: 'interrupted', action: 'observe', turnActive: false }
+        break
       case 'session.idle':
         result = {
           status: 'completed',
@@ -80,12 +108,18 @@ export const opencode: HarnessAdapter = {
         result = { status: 'needs-attention', action: 'permission' }
         break
       case 'question.asked':
+      case 'form.created':
+      case 'session.form.created':
         result = { status: 'needs-attention', action: 'question' }
         break
       case 'permission.replied':
       case 'permission.v2.replied':
       case 'question.replied':
       case 'question.rejected':
+      case 'form.replied':
+      case 'form.cancelled':
+      case 'session.form.answered':
+      case 'session.form.cancelled':
         result = { status: null, action: 'resolve' }
         break
       default:
@@ -100,7 +134,7 @@ export const opencode: HarnessAdapter = {
       return 'Observer removed. Restart OpenCode to finish disconnecting.'
     if (kind === 'missingCli') return 'Install this CLI, then refresh.'
     if (kind === 'unverified')
-      return 'This version is unverified. Buddy may misreport activity; request recovery may be unavailable.'
+      return 'This OpenCode version is unsupported. Buddy requires OpenCode V2.'
     return `Adds a local observer at ${target}. Restart OpenCode to load it.`
   },
 }

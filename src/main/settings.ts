@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import { HARNESS_IDS, type HarnessId } from '../shared/harnesses'
 import { isCompanionPosition, type CompanionPosition } from '../shared/companion'
 import { isCliVersion } from './versions'
@@ -52,6 +52,23 @@ export class ProfileSettings {
       HARNESS_IDS.flatMap((id) => (this.allowedVersion(id) ? [[id, this.allowedVersion(id)]] : [])),
     )
     this.write({ ...this.data, unverifiedVersions: { ...versions, [harness]: version } })
+  }
+  executable(harness: HarnessId): string | null {
+    const paths = this.data.executables
+    if (!paths || typeof paths !== 'object' || Array.isArray(paths)) return null
+    const value = (paths as Record<string, unknown>)[harness]
+    return typeof value === 'string' && isAbsolute(value) && !value.includes('\0') ? value : null
+  }
+  setExecutable(harness: HarnessId, path: string | null): void {
+    if (path !== null && (!isAbsolute(path) || path.includes('\0')))
+      throw new Error('Invalid executable path')
+    const executables = Object.fromEntries(
+      HARNESS_IDS.flatMap((id) => {
+        const value = id === harness ? path : this.executable(id)
+        return value ? [[id, value]] : []
+      }),
+    )
+    this.write({ ...this.data, executables })
   }
   controlsEnabled(harness: HarnessId): boolean {
     return Array.isArray(this.data.controls) && this.data.controls.includes(harness)

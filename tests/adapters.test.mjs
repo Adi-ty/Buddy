@@ -130,10 +130,25 @@ test('adapter event fixtures preserve lifecycle, completion and provider-specifi
     ],
     ['opencode', 'session.created', { title: 'Title' }, null, 'metadata'],
     ['opencode', 'session.status', { status: 'retry' }, 'working', 'observe'],
+    ['opencode', 'session.status', { status: 'running' }, 'working', 'observe'],
+    ['opencode', 'session.step.started', {}, 'working', 'observe'],
+    ['opencode', 'session.step.ended', {}, 'working', 'observe'],
+    ['opencode', 'session.tool.progress', {}, 'working', 'observe'],
+    ['opencode', 'session.execution.started', {}, 'working', 'observe'],
+    ['opencode', 'session.execution.succeeded', {}, 'completed', 'observe'],
+    ['opencode', 'session.execution.failed', {}, 'error', 'observe'],
+    ['opencode', 'session.execution.interrupted', {}, 'interrupted', 'observe'],
+    ['opencode', 'session.retry.scheduled', {}, 'working', 'observe'],
     ['opencode', 'session.status', { status: 'idle' }, 'idle', 'observe'],
     ['opencode', 'session.idle', {}, 'completed', 'observe'],
     ['opencode', 'permission.v2.asked', {}, 'needs-attention', 'permission'],
     ['opencode', 'question.asked', {}, 'needs-attention', 'question'],
+    ['opencode', 'form.created', {}, 'needs-attention', 'question'],
+    ['opencode', 'session.form.created', {}, 'needs-attention', 'question'],
+    ['opencode', 'form.replied', {}, null, 'resolve'],
+    ['opencode', 'form.cancelled', {}, null, 'resolve'],
+    ['opencode', 'session.form.answered', {}, null, 'resolve'],
+    ['opencode', 'session.form.cancelled', {}, null, 'resolve'],
     ['opencode', 'question.rejected', {}, null, 'resolve'],
   ]) {
     const mapped = normalize(harness, event, extra)
@@ -171,8 +186,13 @@ test('version detection retains prerelease and build identities for exact-versio
     '0.162.1-preview.2+custom.3',
   )
   assert.equal(parseCliVersion('Claude 2.1.295'), '2.1.295')
+  assert.equal(parseCliVersion('opencode v2.0.28'), '2.0.28')
   assert(isCliVersion('1.18.35-beta'))
   assert(!isCliVersion('not a version'))
+  assert(ADAPTERS.opencode.compat.matches('2.0.0'))
+  assert(ADAPTERS.opencode.compat.matches('2.4.1-beta.2'))
+  assert(!ADAPTERS.opencode.compat.matches('1.18.35'))
+  assert(!ADAPTERS.opencode.compat.supports('1.18.35'))
 })
 
 test('failure and interruption metadata use each harness contract without fabricated hook events', () => {

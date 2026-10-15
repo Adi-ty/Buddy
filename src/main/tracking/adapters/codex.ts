@@ -15,8 +15,10 @@ export const codex: HarnessAdapter = {
   cli: { command: 'codex', extraPaths: [] },
   compat: {
     verified: '0.162.1',
-    async probe(path) {
+    async probe(path, env) {
       const { stdout } = await promisify(execFile)(path, ['features', 'list'], {
+        env,
+        cwd: env.HOME || homedir(),
         timeout: 2000,
         maxBuffer: 32_768,
       })

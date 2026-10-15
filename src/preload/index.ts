@@ -20,6 +20,8 @@ const api: BuddyAPI = {
     ipcRenderer.invoke(IPC.installIntegration, harness, allowUnverified),
   removeIntegration: (harness) => ipcRenderer.invoke(IPC.removeIntegration, harness),
   refreshIntegrations: () => ipcRenderer.invoke(IPC.refreshIntegrations),
+  chooseExecutable: (harness, reset = false) =>
+    ipcRenderer.invoke(IPC.chooseExecutable, harness, reset),
   sessionAction: (id, action) => ipcRenderer.invoke(IPC.sessionAction, id, action),
   getSessionAvatar: (id) => ipcRenderer.invoke(IPC.sessionAvatar, id),
   setPreference: (key, enabled) => ipcRenderer.invoke(IPC.preference, key, enabled),

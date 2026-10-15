@@ -13,7 +13,10 @@ export interface HarnessCatalogEntry {
   shortLabel: string
   description: string
   connection: 'not-connected' | 'configured' | 'observed' | 'stale'
-  installation: 'not-checked' | 'installed' | 'not-found'
+  installation: 'not-checked' | 'installed' | 'not-found' | 'broken'
+  executablePath?: string
+  executableOverride?: boolean
+  discoveryError?: string
   observer: 'not-installed' | 'installed' | 'incomplete'
   controls?: boolean
   controlsConnection?: 'disabled' | 'connecting' | 'connected' | 'unavailable'
@@ -138,6 +141,7 @@ export interface BuddyAPI {
   installIntegration(harness: HarnessId, allowUnverified?: boolean): Promise<void>
   removeIntegration(harness: HarnessId): Promise<void>
   refreshIntegrations(): Promise<void>
+  chooseExecutable(harness: HarnessId, reset?: boolean): Promise<void>
   sessionAction(id: string, action: SessionAction): Promise<void>
   getSessionAvatar(id: string): Promise<string>
   setPreference(key: 'desktopNotifications' | 'launchAtLogin', enabled: boolean): Promise<void>
@@ -186,6 +190,7 @@ export const IPC = {
   installIntegration: 'buddy:install-integration',
   removeIntegration: 'buddy:remove-integration',
   refreshIntegrations: 'buddy:refresh-integrations',
+  chooseExecutable: 'buddy:choose-executable',
   sessionAction: 'buddy:session-action',
   sessionAvatar: 'buddy:session-avatar',
   preference: 'buddy:preference',

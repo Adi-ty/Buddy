@@ -14,6 +14,7 @@ import {
   powerMonitor,
   shell,
   clipboard,
+  dialog,
 } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { DASHBOARD_ROUTES, IPC } from '../shared/contracts'
@@ -414,10 +415,10 @@ function publishSessions(): void {
   broadcast()
 }
 
-async function refreshIntegrations(): Promise<void> {
+async function refreshIntegrations(refreshEnvironment = false): Promise<void> {
   if (!integrations) return
   lastDetection = Date.now()
-  const harnesses = await integrations.refresh(snapshot.harnesses)
+  const harnesses = await integrations.refresh(snapshot.harnesses, refreshEnvironment)
   // Keep display/session updates received while CLI detection was in flight.
   snapshot = { ...snapshot, harnesses }
   const codex = harnesses.find((entry) => entry.id === 'codex')
@@ -609,13 +610,39 @@ if (!app.requestSingleInstanceLock()) {
           }
         })
       }
+      ipcMain.handle(IPC.chooseExecutable, async (event, ...args: unknown[]) => {
+        trustedRequest(event, true)
+        if (args.length !== 2 || !isHarnessId(args[0]) || typeof args[1] !== 'boolean')
+          throw new Error('Invalid executable selection')
+        if (!integrations) throw new Error('Local observation is unavailable')
+        if (setupBusy) throw new Error('Another integration operation is in progress')
+        setupBusy = true
+        try {
+          let path: string | null = null
+          if (!args[1]) {
+            const parent = BrowserWindow.fromWebContents(event.sender)
+            if (!parent) throw new Error('Dashboard is unavailable')
+            const selection = await dialog.showOpenDialog(parent, {
+              title: 'Choose coding agent executable',
+              properties: ['openFile', 'showHiddenFiles'],
+              buttonLabel: 'Use executable',
+            })
+            if (selection.canceled || !selection.filePaths[0]) return
+            path = selection.filePaths[0]
+          }
+          await integrations.chooseExecutable(args[0], path)
+          await refreshIntegrations(true)
+        } finally {
+          setupBusy = false
+        }
+      })
       ipcMain.handle(IPC.refreshIntegrations, async (event, ...args: unknown[]) => {
         trustedRequest(event, true)
         if (args.length) throw new Error('Invalid refresh request')
         if (setupBusy) throw new Error('Another integration operation is in progress')
         setupBusy = true
         try {
-          await refreshIntegrations()
+          await refreshIntegrations(true)
         } finally {
           setupBusy = false
         }

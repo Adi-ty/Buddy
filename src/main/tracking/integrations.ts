@@ -1,8 +1,4 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import {
-  accessSync,
-  constants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -11,17 +7,15 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import type { HarnessCatalogEntry, HarnessId } from '../../shared/contracts'
 import { ADAPTERS, HARNESSES } from './adapters'
 import type { ProfileSettings } from '../settings'
-import { parseCliVersion } from '../versions'
+import { CliDiscovery, cliEnvironment, findCli, validateExecutable } from '../cli-discovery'
 import { HOOK_WINDOW } from './requests'
 
-const execute = promisify(execFile)
 const CONTROL_TIMEOUT = HOOK_WINDOW / 1000 + 10
 const quote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -38,6 +32,10 @@ export class IntegrationManager {
     private readonly bundled: string,
     private readonly development: boolean,
     private readonly settings?: ProfileSettings,
+    private readonly discovery = new CliDiscovery({
+      // Development and terminal launches already carry the selected toolchain.
+      resolveShell: !development && !process.env.TERM,
+    }),
   ) {}
   target(harness: HarnessId): string {
     return ADAPTERS[harness].target({ profile: this.profile, development: this.development })
@@ -187,47 +185,37 @@ export class IntegrationManager {
   private wrapper(harness: HarnessId): string {
     return `export { default } from ${JSON.stringify(pathToFileURL(join(this.profile, 'integrations', ADAPTERS[harness].pluginAsset!)).href)}\n`
   }
-  async refresh(catalog: readonly HarnessCatalogEntry[]): Promise<HarnessCatalogEntry[]> {
+  async chooseExecutable(harness: HarnessId, path: string | null): Promise<void> {
+    if (!this.settings) throw new Error('Buddy settings are unavailable')
+    if (path !== null) await validateExecutable(path)
+    this.settings.setExecutable(harness, path)
+  }
+  async refresh(
+    catalog: readonly HarnessCatalogEntry[],
+    refreshEnvironment = false,
+  ): Promise<HarnessCatalogEntry[]> {
+    const environment = await this.discovery.environment(refreshEnvironment)
     const entries = await Promise.all(
       catalog.map(async (entry): Promise<HarnessCatalogEntry> => {
         const adapter = ADAPTERS[entry.id]
-        const candidates = [
-          ...new Set(
-            [
-              ...(process.env.PATH ?? '').split(':').filter(Boolean),
-              join(homedir(), '.local/bin'),
-              ...adapter.cli.extraPaths,
-              '/opt/homebrew/bin',
-              '/usr/local/bin',
-            ].map((dir) => join(dir, adapter.cli.command)),
-          ),
-        ]
+        const override = this.settings?.executable(entry.id)
+        const env = cliEnvironment(environment.env, adapter.cli.extraPaths)
+        const cli = await findCli(adapter.cli.command, env, override)
         let detected:
           | { path: string; version: string; compatible: boolean; capable: boolean }
           | undefined
-        for (const candidate of candidates) {
+        if (cli.path && cli.version) {
+          let capable = adapter.compat.supports?.(cli.version) ?? true
           try {
-            accessSync(candidate, constants.X_OK)
-            const { stdout } = await execute(candidate, ['--version'], {
-              timeout: 2000,
-              maxBuffer: 4096,
-            })
-            const version = parseCliVersion(stdout)
-            if (!version) continue
-            // The concrete contracts checked for this implementation. Other
-            // versions remain detected but require verification before setup.
-            let capable = true
-            try {
-              capable = !adapter.compat.probe || (await adapter.compat.probe(candidate))
-            } catch {
-              capable = false
-            }
-            const compatible = version === adapter.compat.verified && capable
-            detected = { path: candidate, version, compatible, capable }
-            break
+            capable =
+              capable && (!adapter.compat.probe || (await adapter.compat.probe(cli.path, env)))
           } catch {
-            /* A missing or broken executable is not installed coverage. */
+            capable = false
           }
+          const compatible =
+            (adapter.compat.matches?.(cli.version) ?? cli.version === adapter.compat.verified) &&
+            capable
+          detected = { path: cli.path, version: cli.version, compatible, capable }
         }
         if (detected) this.detected.set(entry.id, detected)
         else this.detected.delete(entry.id)
@@ -235,7 +223,10 @@ export class IntegrationManager {
         const configurationError = this.configurationErrors.get(entry.id)
         return {
           ...entry,
-          installation: detected ? 'installed' : 'not-found',
+          installation: detected ? 'installed' : cli.path ? 'broken' : 'not-found',
+          executablePath: cli.path,
+          executableOverride: !!override,
+          discoveryError: cli.error ?? environment.error,
           version: detected?.version,
           canInstall:
             !!detected &&
@@ -255,8 +246,9 @@ export class IntegrationManager {
           connection: observer === 'installed' ? 'configured' : 'not-connected',
           variants:
             'Local CLI is the setup target. Client identity is unknown in hook/plugin events. Desktop and IDE variants require separate live verification; remote/cloud sessions are not covered.',
-          setup:
-            detected && !detected.capable
+          setup: cli.error
+            ? 'Fix the CLI installation or choose another executable, then refresh.'
+            : detected && !detected.capable
               ? 'The required observer feature is unavailable. An unverified-version override cannot enable it.'
               : adapter.setupCopy(
                   observer === 'installed'
