@@ -31,7 +31,7 @@ mkdirSync(bin)
 for (const [command, version] of [
   ['codex', '0.162.1'],
   ['claude', '2.1.295'],
-  ['opencode', '2.0.0'],
+  ['opencode', '2.0.29'],
 ]) {
   writeFileSync(
     join(bin, command),
@@ -1049,6 +1049,7 @@ async function verify() {
 
   // Exercise the installed OpenCode V2 plugin through its event subscription.
   await js(dashboard, 'window.buddy.installIntegration("opencode")')
+  await js(dashboard, 'window.buddy.setIntegrationControls("opencode", true)')
   const { loadInstalledOpenCodePlugin } = await import('./opencode-host-fixture.mjs')
   const BuddyPlugin = await loadInstalledOpenCodePlugin(profile)
   const familyRoot = 'family-root'
@@ -1065,6 +1066,53 @@ async function verify() {
       },
     ]),
   ])
+  const familyForms = new Map()
+  const familyAnswers = []
+  const { createServer } = require('node:http')
+  const service = createServer(async (request, response) => {
+    const path = new URL(request.url, 'http://localhost').pathname
+    let data
+    if (path === '/api/session/active') data = { [familyRoot]: 'running' }
+    else if (path === '/api/permission/request') data = []
+    else if (path === '/api/form') data = [...familyForms.values()]
+    else {
+      const match = path.match(/^\/api\/session\/([^/]+)\/form\/([^/]+)(\/reply)?$/)
+      const form = match && familyForms.get(match[2])
+      if (!form || form.sessionID !== match[1]) {
+        response.writeHead(404).end()
+        return
+      }
+      if (match[3] && request.method === 'POST') {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        familyAnswers.push({ sessionID: match[1], formID: match[2], ...JSON.parse(body) })
+        familyForms.delete(match[2])
+        response.writeHead(204).end()
+        return
+      }
+      data = { ...form, state: { status: 'pending' } }
+    }
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify({ data }))
+  })
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, '127.0.0.1', resolve)
+  })
+  const closeService = () =>
+    new Promise((resolve) => {
+      service.closeAllConnections()
+      service.close(resolve)
+    })
+  cleanups.push(closeService)
+  mkdirSync(join(process.env.XDG_STATE_HOME, 'opencode'), { recursive: true })
+  writeFileSync(
+    join(process.env.XDG_STATE_HOME, 'opencode/service.json'),
+    JSON.stringify({
+      url: `http://127.0.0.1:${service.address().port}`,
+      pid: process.pid,
+    }),
+  )
   const eventQueue = []
   let wakeEvent = () => {}
   const pluginCleanup = BuddyPlugin.setup({
@@ -1105,6 +1153,96 @@ async function verify() {
       ).length === 8,
     'parent and seven nested subagents reported by the installed plugin',
   )
+  for (const owner of [familyRoot, familyChildren[6]]) {
+    const formID = `form-${owner}`
+    const form = {
+      id: formID,
+      sessionID: owner,
+      title: 'Continue the task?',
+      fields: [
+        {
+          key: 'continue',
+          type: 'string',
+          title: 'Continue the task?',
+          required: true,
+          custom: false,
+          options: [
+            { label: 'Yes', value: 'proceed' },
+            { label: 'No', value: 'reconsider' },
+          ],
+        },
+      ],
+    }
+    familyForms.set(formID, form)
+    eventQueue.push({ id: `event-${formID}`, type: 'form.created', data: { form } })
+    wakeEvent()
+    await until(
+      async () =>
+        (await snapshot(dashboard)).requests?.some(
+          (request) => request.sessionId === `opencode:${owner}`,
+        ),
+      'installed V2 plugin form reaches Buddy',
+    )
+    await expand(overlay)
+    await openOverlayRow(overlay, 'opencode:family-root')
+    await until(
+      () =>
+        js(
+          overlay,
+          `document.querySelector('.request-context p')?.textContent === ${JSON.stringify(familyInfos.get(owner).title)}`,
+        ),
+      'opening a family shows its question owner',
+    )
+    assert.equal(
+      await js(
+        overlay,
+        `(() => {
+      const panel = document.querySelector('.request-panel');
+      const agents = document.querySelector('section[aria-label^="Subagents of"] details');
+      const question = panel.querySelector('legend').getBoundingClientRect();
+      const surface = document.querySelector('.overlay-surface').getBoundingClientRect();
+      return !agents.open && Boolean(panel.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && question.top >= surface.top && question.bottom < surface.bottom - 44;
+    })()`,
+      ),
+      true,
+      'Parent and nested-child questions stay above collapsed subagents',
+    )
+    assert.equal(
+      await js(overlay, 'document.querySelectorAll(".question-option input:checked").length'),
+      0,
+    )
+    await clickSelector(overlay, '.question-option')
+    await until(
+      () =>
+        js(
+          overlay,
+          '[...document.querySelectorAll("button")].some(button => button.textContent.trim() === "Send answers" && !button.disabled)',
+        ),
+      'form selection is ready to submit',
+    )
+    await click(overlay, 'Send answers')
+    await until(
+      () => familyAnswers.some((answer) => answer.formID === formID),
+      'reply reaches the exact native form',
+    )
+    assert.deepEqual(
+      familyAnswers.find((answer) => answer.formID === formID),
+      {
+        sessionID: owner,
+        formID,
+        answer: { continue: 'proceed' },
+      },
+    )
+    await until(
+      async () =>
+        !(await snapshot(dashboard)).requests?.length &&
+        !(await snapshot(dashboard)).sessions.some(
+          (session) => session.status === 'needs-attention',
+        ),
+      'native form acknowledgment clears controls and attention',
+    )
+  }
   await js(dashboard, `document.querySelector('a[href="/sessions"]').click()`)
   await until(
     () => js(dashboard, 'document.querySelector("h1").textContent === "Sessions"'),
@@ -1153,6 +1291,8 @@ async function verify() {
   )
   pluginCleanup()
   cleanups.splice(cleanups.indexOf(closePlugin), 1)
+  await closeService()
+  cleanups.splice(cleanups.indexOf(closeService), 1)
   for (const id of familyInfos.keys())
     await report(join(profile, 'bridge.json'), {
       harness: 'opencode',
@@ -1163,7 +1303,7 @@ async function verify() {
   await js(dashboard, 'window.buddy.removeIntegration("opencode")')
   assert.deepEqual(errors, [])
   console.log(
-    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested subagent navigation; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
+    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested subagent navigation and native V2 form replies; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
   )
   // A final deferred write must survive normal Electron quit.
   await send('SessionStart', 'quit-flush')
