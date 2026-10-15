@@ -3,6 +3,12 @@ import { DASHBOARD_ROUTES, IPC } from '../shared/contracts'
 import type { BuddyAPI, DashboardRoute } from '../shared/contracts'
 
 const api: BuddyAPI = {
+  connectTelegram: (token) => ipcRenderer.invoke(IPC.telegramConnect, token),
+  pairTelegram: () => ipcRenderer.invoke(IPC.telegramPair),
+  copyTelegramPairingLink: (url) => ipcRenderer.invoke(IPC.telegramCopyPairingLink, url),
+  disconnectTelegram: () => ipcRenderer.invoke(IPC.telegramDisconnect),
+  reconnectTelegram: () => ipcRenderer.invoke(IPC.telegramReconnect),
+  setTelegramPreferences: (preferences) => ipcRenderer.invoke(IPC.telegramPreferences, preferences),
   getSnapshot: () => ipcRenderer.invoke(IPC.snapshot),
   onSnapshot: (listener) => {
     const handle = (

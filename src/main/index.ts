@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   app,
+  safeStorage,
   BrowserWindow,
   ipcMain,
   Menu,
@@ -26,10 +27,13 @@ import { OverlayController } from './overlay'
 import { SessionStore } from './tracking/store'
 import { SessionNames } from './tracking/session-names'
 import { ObservationBridge } from './tracking/bridge'
+import { RequestService } from './request-service'
 import { RequestBridge } from './tracking/requests'
 import { CodexAppServer } from './tracking/codex-app-server'
 import { normalizeObservation, type Observation } from './tracking/events'
 import { IntegrationManager, integrationAssets } from './tracking/integrations'
+import { TelegramService } from './telegram/service'
+import { TelegramStorage } from './telegram/storage'
 import { ProfileSettings } from './settings'
 import { SessionNotifications } from './notifications'
 import { performSessionAction } from './session-actions'
@@ -66,9 +70,19 @@ let store: SessionStore | null = null
 let bridge: ObservationBridge | null = null
 let requests: RequestBridge | null = null
 let codexServer: CodexAppServer | null = null
+const requestService = new RequestService(
+  () => [...(requests?.snapshot() ?? []), ...(codexServer?.snapshot() ?? [])],
+  () => !!snapshot?.tracking.available && !store?.message,
+  async (id, response) => {
+    if (codexServer?.owns(id)) await codexServer.respond(id, response)
+    else if (requests) await requests.respond(id, response)
+    else throw new Error('Agent replies are unavailable.')
+  },
+)
 let integrations: IntegrationManager | null = null
 let settings: ProfileSettings | null = null
 let notifications: SessionNotifications | null = null
+let telegram: TelegramService | null = null
 let lastDetection = 0
 let expiryTimer: ReturnType<typeof setInterval> | null = null
 let stopWake: (() => void) | null = null
@@ -347,6 +361,7 @@ function observeSession(event: Observation): void {
   const before = store?.get(`${event.harness}:${event.sessionId}`) ?? null
   if (store?.apply(event)) {
     notifications?.observe(before, store.get(`${event.harness}:${event.sessionId}`))
+    telegram?.observe(before, store.get(`${event.harness}:${event.sessionId}`))
     scheduleSessions()
   } else if (store?.message) scheduleSessions()
 }
@@ -370,10 +385,13 @@ function publishSessions(): void {
         }
       : record
   })
+  requestService.reconcile()
+  telegram?.reconcile(sessions)
   notifications?.reconcileObserved(sessions)
   snapshot = {
     ...snapshot,
     ...records,
+    telegram: telegram?.status(),
     preferences: {
       desktopNotifications: settings?.desktopNotifications ?? true,
       launchAtLogin: app.isPackaged && app.getLoginItemSettings().openAtLogin,
@@ -694,12 +712,30 @@ if (!app.requestSingleInstanceLock()) {
           setupBusy = false
         }
       })
+      for (const [channel, count, operation] of [
+        [IPC.telegramConnect, 1, (value: unknown) => telegram!.connect(value)],
+        [IPC.telegramPair, 0, () => telegram!.pairing()],
+        [
+          IPC.telegramCopyPairingLink,
+          1,
+          (value: unknown) => clipboard.writeText(telegram!.pairingLink(value)),
+        ],
+        [IPC.telegramDisconnect, 0, () => telegram!.disconnect()],
+        [IPC.telegramReconnect, 0, () => telegram!.reconnect()],
+        [IPC.telegramPreferences, 1, (value: unknown) => telegram!.preferences(value)],
+      ] as const) {
+        ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+          trustedRequest(event, true)
+          if (args.length !== count || !telegram)
+            throw new Error('Invalid Telegram settings operation.')
+          return operation(args[0])
+        })
+      }
       ipcMain.handle(IPC.respondToRequest, async (event, ...args: unknown[]) => {
         trustedRequest(event)
         if (args.length !== 2 || !requests || !snapshot.tracking.available)
           throw new Error('Agent replies are unavailable.')
-        if (codexServer?.owns(args[0])) await codexServer.respond(args[0], args[1])
-        else await requests.respond(args[0], args[1])
+        await requestService.respond(args[0], args[1], 'buddy')
       })
       ipcMain.handle(IPC.overlayInput, (event, ...args: unknown[]) => {
         trustedRequest(event)
@@ -799,6 +835,7 @@ if (!app.requestSingleInstanceLock()) {
                 decision === 'allow',
               )
           },
+          (id, outcome) => requestService.resolve(id, outcome),
         )
         await requests.start()
         codexServer = new CodexAppServer({
@@ -839,10 +876,38 @@ if (!app.requestSingleInstanceLock()) {
         }
         broadcast()
       }
+      telegram = new TelegramService({
+        storage: new TelegramStorage(profile, {
+          available: async () =>
+            (await safeStorage.isAsyncEncryptionAvailable()) &&
+            (process.platform !== 'linux' ||
+              safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+          encrypt: (value) => safeStorage.encryptStringAsync(value),
+          decrypt: async (value) => (await safeStorage.decryptStringAsync(value)).result,
+        }),
+        requests: requestService,
+        changed: () => {
+          snapshot = { ...snapshot, telegram: telegram?.status() }
+          broadcast()
+        },
+      })
+      // Do not delay local observation or opening the dashboard on network/Keychain.
+      snapshot = { ...snapshot, telegram: telegram.status() }
+      void telegram.start()
+      const suspendTelegram = () => telegram?.suspend()
+      const resumeTelegram = () => {
+        publishSessions()
+        telegram?.resume()
+      }
+      powerMonitor.on('suspend', suspendTelegram)
+      powerMonitor.on('resume', resumeTelegram)
       await refreshIntegrations()
       if (openOnReady) createDashboard('/sessions')
       app.on('activate', () => createDashboard('/sessions'))
       app.once('will-quit', () => {
+        telegram?.dispose()
+        powerMonitor.removeListener('suspend', suspendTelegram)
+        powerMonitor.removeListener('resume', resumeTelegram)
         if (expiryTimer) clearInterval(expiryTimer)
         if (publishTimer) clearTimeout(publishTimer)
         if (broadcastTimer) clearTimeout(broadcastTimer)
