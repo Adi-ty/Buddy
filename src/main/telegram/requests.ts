@@ -4,6 +4,7 @@ import type { TelegramPreferences } from '../../shared/telegram'
 import { RequestService, type RequestResolution } from '../request-service'
 import { validateResponse } from '../tracking/request-response'
 import { integer, record, TelegramCancelled } from './client'
+import { sessionContext } from './messages'
 import type { MessageMapping, Pair } from './storage'
 
 export type Send = (
@@ -30,18 +31,6 @@ interface Entry {
   sendUnconfirmed: boolean
   editFailed: boolean
   handles: string[]
-}
-
-export function sessionTitle(
-  session: SessionRecord | undefined,
-  sessions: readonly SessionRecord[],
-): string {
-  if (!session) return 'Agent session'
-  const parent = sessions.find((item) => item.id === session.parentId)
-  return `${parent ? `${parent.name} → ` : ''}${session.name} · ${session.harness} · ${session.project}`.slice(
-    0,
-    500,
-  )
 }
 
 // Drafts and opaque button/reply handles are memory-only. Every operation
@@ -83,10 +72,10 @@ export class TelegramRequests {
     if (!entry) return
     const label =
       resolution.outcome === 'confirmed' && resolution.origin
-        ? `Answered in ${resolution.origin === 'telegram' ? 'Telegram' : 'Buddy'}`
+        ? `✅ Answered in ${resolution.origin === 'telegram' ? 'Telegram' : 'Buddy'}`
         : resolution.outcome === 'expired'
-          ? 'Expired in Buddy. Check the agent’s native interface.'
-          : 'No longer pending'
+          ? '⏳ Expired in Buddy. Check the agent’s native interface.'
+          : 'ℹ️ No longer pending'
     this.retire(entry, label)
   }
   private retire(entry: Entry, label: string): void {
@@ -101,19 +90,23 @@ export class TelegramRequests {
     const pending = this.options.requests.snapshot()
     for (const entry of this.entries.values()) {
       const request = pending.find((item) => item.id === entry.request.id)
-      if (!request) this.retire(entry, 'No longer pending')
+      const session = sessions.find((item) => item.id === request?.sessionId)
+      const title = session ? sessionContext(session, sessions) : entry.title
+      if (!request) this.retire(entry, 'ℹ️ No longer pending')
       else if (Date.now() >= request.expiresAt)
         this.retire(
           entry,
           request.deadlineSource === 'buddy'
-            ? 'Expired in Buddy. Check the agent’s native interface.'
-            : 'No longer pending',
+            ? '⏳ Expired in Buddy. Check the agent’s native interface.'
+            : 'ℹ️ No longer pending',
         )
       else if (
         request.submitting !== entry.request.submitting ||
-        request.error !== entry.request.error
+        request.error !== entry.request.error ||
+        title !== entry.title
       ) {
         entry.request = request
+        entry.title = title
         this.refresh(entry)
       } else entry.request = request // Includes renewed connection-specific deadlines.
     }
@@ -141,9 +134,10 @@ export class TelegramRequests {
         continue
       const entry: Entry = {
         request,
-        title: sessionTitle(
+        title: sessionContext(
           sessions.find((s) => s.id === request.sessionId),
           sessions,
+          request.harness,
         ),
         answers: request.questions.map(() => []),
         question: 0,
@@ -161,11 +155,13 @@ export class TelegramRequests {
   }
   private content(entry: Entry): { text: string; buttons: { text: string; action: Action }[][] } {
     const r = entry.request
-    let text = `${entry.title}\n\n${r.kind === 'permission' ? 'Permission requested' : 'Question requested'}${r.tool ? ` · ${r.tool}` : ''}\n${r.details}`
+    const heading =
+      entry.label ?? (r.kind === 'permission' ? '🔐 Permission requested' : '💬 Answer needed')
+    let text = `${heading}\n\n${entry.title}\n\n${r.tool ? `Tool: ${r.tool}\n\n` : ''}${r.details}`
     const buttons: { text: string; action: Action }[][] = []
     if (r.kind === 'question') {
       for (const [index, question] of r.questions.entries()) {
-        text += `\n\n${index + 1}. ${question.text}`
+        text += `\n\nQuestion ${index + 1} of ${r.questions.length}\n${question.text}`
         for (const option of question.options)
           text += `\n• ${option.label}${option.description ? ` — ${option.description}` : ''}`
         text += `\nAnswer: ${entry.answers[index]?.join(', ') || '(not selected)'}`
@@ -174,10 +170,10 @@ export class TelegramRequests {
     // Approval without the complete command/diff/question context is unsafe.
     if (text.length > 3400)
       return {
-        text: `${entry.title}\n\n${r.kind === 'permission' ? 'Permission' : 'Question'} pending. This request is too large to review safely here. Open the agent’s native interface.\n${entry.label ?? ''}`,
+        text: `${heading}\n\n${entry.title}\n\nThis request is too large to review safely here. Open the agent’s native interface.`,
         buttons,
       }
-    if (entry.label) return { text: `${text}\n\n${entry.label}`, buttons }
+    if (entry.label) return { text, buttons }
     if (r.submitting)
       return { text: `${text}\n\nResponse sent; awaiting the agent. ${r.error ?? ''}`, buttons }
     if (
@@ -196,7 +192,7 @@ export class TelegramRequests {
     } else {
       const q = r.questions[entry.question]
       if (!q) return { text: `${text}\n\nAnswer in the agent’s native interface.`, buttons }
-      text += `\n\nEditing question ${entry.question + 1}. ${q.multiple ? 'Toggle all applicable options.' : 'Choose one answer.'} Submit only when every answer is ready.`
+      text += `\n\nAnswering question ${entry.question + 1} of ${r.questions.length}. ${q.multiple ? 'Select all that apply.' : 'Choose one answer.'} Submit when all answers are ready.`
       for (const [index, option] of q.options.entries())
         buttons.push([
           {
@@ -322,7 +318,7 @@ export class TelegramRequests {
     const { entry, action } = handle
     const live = this.live(entry)
     if (!live) {
-      this.retire(entry, 'No longer pending')
+      this.retire(entry, 'ℹ️ No longer pending')
       return
     }
     // Invalidate before any await, including custom prompt delivery.
@@ -359,7 +355,7 @@ export class TelegramRequests {
           'sendMessage',
           {
             chat_id: this.options.pair.chat,
-            text: `Reply directly to this message with your answer to question ${question + 1}:\n${live.questions[question]!.text.slice(0, 3000)}\nFor multiple choice, this replaces the current selection with one custom answer. Then use Submit all answers.`,
+            text: `✏️ Your answer\n\n${entry.title}\n\nQuestion ${question + 1} of ${live.questions.length}\n${live.questions[question]!.text.slice(0, 3000)}\n\nReply directly to this message.${live.questions[question]!.multiple ? ' This replaces your selections for this question.' : ''} Then use Submit all answers on the original message.`,
             reply_markup: { force_reply: true, selective: true },
           },
           () => !!this.live(entry),
