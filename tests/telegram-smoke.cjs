@@ -56,6 +56,15 @@ module.exports = function installTelegramFixture(safeStorage) {
   return {
     token,
     messages,
+    command: (text) =>
+      push({
+        message: {
+          message_id: 900 + nextUpdate,
+          from: { id: 456 },
+          chat: { id: 456, type: 'private' },
+          text,
+        },
+      }),
     pair: (url) =>
       push({
         message: {

@@ -645,6 +645,12 @@ async function verify() {
     'Telegram private chat pairing',
   )
   assert.match((await snapshot(dashboard)).telegram.pairedUser, /456/)
+  telegramFixture.command('/status')
+  const statusMessage = () =>
+    [...telegramFixture.messages.values()].find((m) => m.text?.startsWith('Buddy · Session status'))
+  await until(() => statusMessage(), 'Telegram status from main session store')
+  assert(!statusMessage().text.includes('tracking is unavailable'))
+  assert((await snapshot(dashboard)).sessions.some((s) => statusMessage().text.includes(s.name)))
   await until(
     () => js(dashboard, `document.querySelectorAll('${telegramUI} [role="switch"]').length === 4`),
     'paired notification settings',
@@ -683,6 +689,16 @@ async function verify() {
     'pause feedback',
   )
   await captureTelegram('paused')
+  const beforeRefresh = statusMessage()
+  const refreshStatus = beforeRefresh.reply_markup.inline_keyboard
+    .flat()
+    .find((b) => b.text === 'Refresh')
+  telegramFixture.tap(beforeRefresh, refreshStatus.callback_data)
+  await until(
+    () => statusMessage().text.includes('New alerts paused'),
+    'Telegram status refresh in place',
+  )
+  assert.equal(statusMessage().message_id, beforeRefresh.message_id)
   await click(dashboard, 'Resume notifications')
   await until(
     async () => !(await snapshot(dashboard)).telegram.preferences.paused,

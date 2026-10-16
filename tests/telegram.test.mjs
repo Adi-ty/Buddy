@@ -4,8 +4,14 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadSource } from './load-source.mjs'
-const { TelegramService, TelegramClient, TelegramError, TelegramStorage, RequestService } =
-  await loadSource('tests/telegram-entry.ts')
+const {
+  TelegramService,
+  TelegramClient,
+  TelegramError,
+  TelegramStorage,
+  RequestService,
+  statusPage,
+} = await loadSource('tests/telegram-entry.ts')
 const token = '123456789:' + 'fixture_only_not_a_real_token_12345'
 const defaults = {
   permissions: true,
@@ -123,6 +129,7 @@ async function fixture(t, options = {}) {
     changed: () => {},
     client: () => transport,
     sendInterval: 0,
+    trackingAvailable: options.trackingAvailable,
   })
   t.after(() => service.dispose())
   let updateId = options.saved?.offset ?? 0
@@ -1091,4 +1098,320 @@ test('late outgoing success from an old connection cannot erase a new delivery f
   resolveOld({ message_id: 999 })
   await new Promise((r) => setTimeout(r, 20))
   assert.equal(f.service.status().deliveryProblem, true)
+})
+
+const observedSession = (id, extra = {}) => ({
+  id,
+  providerSessionId: id,
+  harness: 'opencode',
+  source: 'plugin',
+  client: 'unknown',
+  name: id,
+  project: 'buddy',
+  cwd: '/private/project',
+  parentId: null,
+  status: 'working',
+  statusChangedAt: Date.now(),
+  presence: 'observed',
+  firstSeen: Date.now(),
+  lastSeen: Date.now(),
+  ordinal: 1,
+  turnId: null,
+  attention: [],
+  activity: [],
+  ...extra,
+})
+const statusMessages = (f) =>
+  [...f.transport.messages.values()].filter((m) => m.text?.startsWith('Buddy · Session status'))
+
+test('status formats only observed families, prioritizes child attention and bounds provider text', () => {
+  const now = Date.now()
+  const sessions = [
+    observedSession('idle', { status: 'idle' }),
+    observedSession('Build <Buddy> & *literal*', {
+      lastSeen: now - 3_600_000,
+      activity: [{ tool: 'Bash', at: now - 3_600_000, event: 'tool' }],
+    }),
+    observedSession('Parent', { status: 'idle' }),
+    observedSession('Nested child', {
+      parentId: 'Child',
+      status: 'needs-attention',
+      attention: [{ id: 'q', kind: 'question', tool: null }],
+    }),
+    observedSession('Child', { parentId: 'Parent', status: 'completed' }),
+    observedSession('STALE PRIVATE NAME', { presence: 'stale' }),
+    observedSession('CLOSED PRIVATE NAME', { presence: 'closed' }),
+    observedSession('Orphan', { parentId: 'STALE PRIVATE NAME' }),
+  ]
+  const snapshot = { sessions, available: true, paused: false }
+  const result = statusPage(snapshot, 0, now)
+  assert.equal(result.pages, 1)
+  assert(result.text.indexOf('Parent') < result.text.indexOf('Build'))
+  assert.match(result.text, /Subagent: waiting for your answer/)
+  assert.match(result.text, /Subagents: 1 needs attention · 1 finished/)
+  assert.match(result.text, /Last observed tool: Bash\nLast activity: 1h ago/)
+  assert.match(result.text, /Orphan · Subagent/)
+  assert(!result.text.includes('PRIVATE NAME'))
+  assert(!result.text.includes('/private/project'))
+  assert(!result.text.includes('Nested child'))
+  assert.match(result.text, /Build <Buddy> & \*literal\*/)
+  const long = statusPage(
+    {
+      ...snapshot,
+      sessions: Array.from({ length: 6 }, (_, i) =>
+        observedSession(String(i), {
+          name: '🧑'.repeat(3000),
+          project: 'x'.repeat(3000),
+          activity: [{ tool: '🧑'.repeat(3000), at: now, event: 'tool' }],
+        }),
+      ),
+    },
+    0,
+    now,
+  )
+  assert(long.text.length < 4096)
+  assert(long.text.isWellFormed())
+  assert.equal(long.pages, 2)
+})
+
+test('status distinguishes unavailable tracking, empty observations and paused alerts', async (t) => {
+  let available = false
+  const f = await fixture(t, { trackingAvailable: () => available })
+  await f.pair()
+  f.live([], [observedSession('Must not leak while unavailable')])
+  f.push(f.message('/status'))
+  await waitFor(() => statusMessages(f).length === 1)
+  assert.match(statusMessages(f)[0].text, /Agent tracking is unavailable/)
+  assert(!statusMessages(f)[0].text.includes('Must not leak'))
+  available = true
+  f.live([])
+  f.service.preferences({ ...defaults, paused: true })
+  await f.tap('Refresh')
+  await waitFor(() => statusMessages(f)[0].text.includes('No observed sessions'))
+  assert.match(statusMessages(f)[0].text, /New alerts paused/)
+  assert.equal(statusMessages(f).length, 1)
+})
+
+test('commands and navigation require the paired user, private chat and bound bot message', async (t) => {
+  const f = await fixture(t)
+  f.push(f.message('/status'))
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(statusMessages(f).length, 0)
+  await f.pair()
+  await waitFor(() => f.button('View status'))
+  const menu = f.transport.calls.find((c) => c.method === 'setMyCommands').body
+  assert.deepEqual(menu.scope, { type: 'chat', chat_id: 456 })
+  assert.deepEqual(
+    menu.commands.map((c) => c.command),
+    ['status', 'help'],
+  )
+  for (const message of [
+    f.message('/status', {}, 789),
+    f.message('/status', {}, 456, 789),
+    f.message('/status', { chat: { id: 456, type: 'group' } }),
+    f.message('/status', { from: { id: 456, is_bot: true } }),
+    f.message('/status@different_bot'),
+  ])
+    f.push(message)
+  await f.tap('View status', 789)
+  await f.tap('View status', 456, (m) => ({ ...m, chat: { id: 789, type: 'private' } }))
+  await f.tap('View status', 456, (m) => ({ ...m, chat: { id: 456, type: 'group' } }))
+  await f.tap('View status', 456, (m) => ({ ...m, from: { id: 789 } }))
+  await f.tap('View status', 456, (m) => ({ ...m, message_id: 987 }))
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(statusMessages(f).length, 0)
+  f.push(f.message('/status@buddy_test_bot'))
+  await waitFor(() => statusMessages(f).length === 1)
+  assert.equal(f.answers.length, 0)
+  assert(
+    statusMessages(f)[0]
+      .reply_markup.inline_keyboard.flat()
+      .every((b) => Buffer.byteLength(b.callback_data) <= 64),
+  )
+})
+
+test('status pages edit in place, clamp after sessions close, and keep request controls separate', async (t) => {
+  const f = await fixture(t, { live: [permission()] })
+  await f.pair()
+  f.live(
+    [permission()],
+    Array.from({ length: 11 }, (_, i) => observedSession('Task ' + i)),
+  )
+  await f.tap('View status')
+  await waitFor(() => statusMessages(f).length === 1)
+  const id = statusMessages(f)[0].message_id
+  const request = f.button('Allow once')
+  assert.match(statusMessages(f)[0].text, /Page 1 of 3/)
+  assert(!f.button('‹ Previous'))
+  await f.tap('Next ›')
+  await waitFor(() => statusMessages(f)[0].text.includes('Page 2 of 3'))
+  await f.tap('Next ›')
+  await waitFor(() => statusMessages(f)[0].text.includes('Page 3 of 3'))
+  assert(!f.button('Next ›'))
+  await f.tap('‹ Previous')
+  await waitFor(() => statusMessages(f)[0].text.includes('Page 2 of 3'))
+  f.live([permission()], [observedSession('Only current session')])
+  await f.tap('Refresh')
+  await waitFor(() => statusMessages(f)[0].text.includes('Only current session'))
+  assert.equal(statusMessages(f)[0].message_id, id)
+  assert(!statusMessages(f)[0].text.includes('Page '))
+  assert(!f.button('Next ›'))
+  assert.deepEqual(f.button('Allow once'), request)
+  assert.equal(f.answers.length, 0)
+  assert.equal(statusMessages(f)[0].parse_mode, undefined)
+  assert.equal(statusMessages(f)[0].link_preview_options.is_disabled, true)
+})
+
+test('status coalesces repeated taps and duplicate updates without blocking approval handling', async (t) => {
+  const f = await fixture(t, { live: [permission()] })
+  await f.pair()
+  await f.tap('View status')
+  await waitFor(() => statusMessages(f).length === 1)
+  f.live([permission()], [observedSession('Changed')])
+  const call = f.transport.call.bind(f.transport)
+  let finish
+  let edits = 0
+  f.transport.call = (method, body, signal) => {
+    if (method === 'editMessageText' && body.text.startsWith('Buddy · Session status')) {
+      edits++
+      return new Promise((resolve) => {
+        finish = () => resolve(call(method, body, signal))
+      })
+    }
+    return call(method, body, signal)
+  }
+  await f.tap('Refresh')
+  await waitFor(() => finish)
+  const ackCount = f.transport.calls.filter((c) => c.method === 'answerCallbackQuery').length
+  for (let i = 0; i < 20; i++) await f.tap('Refresh')
+  const command = f.message('/status')
+  f.push(command)
+  f.push(command)
+  await waitFor(
+    () =>
+      f.transport.calls.filter((c) => c.method === 'answerCallbackQuery').length === ackCount + 20,
+  )
+  await f.tap('Allow once')
+  await waitFor(() => f.answers.length === 1)
+  finish()
+  await waitFor(() => statusMessages(f)[0].text.includes('Changed'))
+  assert.equal(edits, 1)
+  assert.equal(statusMessages(f).length, 1)
+})
+
+test('help is short and a command inside a prompt reply remains a draft answer', async (t) => {
+  const question = {
+    ...permission(),
+    kind: 'question',
+    tool: null,
+    questions: [{ text: 'What command?', multiple: false, custom: true, options: [] }],
+  }
+  const f = await fixture(t, { live: [question] })
+  await f.pair()
+  f.push(f.message('/help'))
+  await waitFor(() =>
+    [...f.transport.messages.values()].some((m) => m.text?.startsWith('Buddy · Help')),
+  )
+  const help = [...f.transport.messages.values()].find((m) => m.text?.startsWith('Buddy · Help'))
+  assert(help.text.length < 350)
+  assert.match(help.text, /\/status/)
+  assert.match(help.text, /Keep Buddy running/)
+  assert(help.reply_markup.inline_keyboard[0][0].text === 'View status')
+  await f.tap('Type an answer…')
+  await waitFor(() => [...f.transport.messages.values()].some((m) => m.reply_markup?.force_reply))
+  const prompt = [...f.transport.messages.values()].find((m) => m.reply_markup?.force_reply)
+  f.push(f.message('/status', { reply_to_message: prompt }))
+  await waitFor(() =>
+    [...f.transport.messages.values()].some((m) => m.text?.includes('Answer: /status')),
+  )
+  assert.equal(statusMessages(f).length, 0)
+  assert.equal(f.answers.length, 0)
+  await f.tap('Submit all answers')
+  await waitFor(() => f.answers.length === 1)
+  assert.deepEqual(f.answers[0].answer, { answers: [['/status']] })
+})
+
+test('old status buttons after sleep and failed edits cannot restore views or answer requests', async (t) => {
+  const f = await fixture(t)
+  await f.pair()
+  await f.tap('View status')
+  await waitFor(() => statusMessages(f).length === 1)
+  const old = f.button('Refresh')
+  f.service.suspend()
+  f.service.resume()
+  await f.tap('Refresh')
+  await waitFor(() =>
+    f.transport.calls.some(
+      (c) => c.method === 'answerCallbackQuery' && c.body.text?.includes('Send /status'),
+    ),
+  )
+  assert.equal(f.transport.calls.filter((c) => c.method === 'editMessageText').length, 1)
+  f.push(f.message('/status'))
+  await waitFor(() => statusMessages(f).length === 2)
+  f.live([], [observedSession('Latest')])
+  f.transport.fail = (method) => (method === 'editMessageText' ? new TelegramError(400) : null)
+  await f.tap('Refresh')
+  await waitFor(() => f.service.status().deliveryProblem)
+  assert(!statusMessages(f).some((m) => m.text.includes('Latest')))
+  f.transport.fail = null
+  // A new command recovers a deleted/uneditable message without an automatic resend.
+  f.push(f.message('/status'))
+  await waitFor(() => statusMessages(f).length === 3)
+  assert.match(statusMessages(f)[2].text, /Latest/)
+  assert.equal(f.answers.length, 0)
+  assert.deepEqual(f.transport.messages.get(old.m.message_id), old.m)
+})
+
+test('navigation handles are bounded and expired handles only suggest a new status command', async (t) => {
+  const f = await fixture(t)
+  await f.pair()
+  await waitFor(() => f.button('View status'))
+  for (let i = 0; i < 17; i++) {
+    f.push(f.message('/status'))
+    await waitFor(() => statusMessages(f).length === i + 1)
+  }
+  const count = f.transport.calls.filter((c) => c.method === 'editMessageText').length
+  // The old welcome button has been evicted, even though its Telegram history remains.
+  await f.tap('View status')
+  await waitFor(() =>
+    f.transport.calls.some((c) => c.body.text?.includes('This view is unavailable')),
+  )
+  assert.equal(f.transport.calls.filter((c) => c.method === 'editMessageText').length, count)
+  const now = Date.now
+  try {
+    Date.now = () => now() + 86_400_001
+    await f.tap('Refresh')
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(f.transport.calls.filter((c) => c.method === 'editMessageText').length, count)
+  } finally {
+    Date.now = now
+  }
+})
+
+test('disconnect during a status send cannot revive its navigation after pairing again', async (t) => {
+  const f = await fixture(t)
+  await f.pair()
+  const call = f.transport.call.bind(f.transport)
+  let finish
+  f.transport.call = (method, body, signal) =>
+    method === 'sendMessage' && body.text.startsWith('Buddy · Session status')
+      ? new Promise((resolve) => {
+          finish = () => resolve(call(method, body, signal))
+        })
+      : call(method, body, signal)
+  f.push(f.message('/status'))
+  await waitFor(() => finish)
+  f.service.disconnect()
+  f.transport.call = call
+  const challenge = await f.service.connect(token)
+  f.push(f.message('/start ' + new URL(challenge.url).searchParams.get('start')))
+  await waitFor(() => f.service.status().pairedUser)
+  finish()
+  await waitFor(() => statusMessages(f).length === 1)
+  await f.tap('Refresh')
+  await waitFor(() =>
+    f.transport.calls.some((c) => c.body.text?.includes('This view is unavailable')),
+  )
+  assert.equal(f.transport.calls.filter((c) => c.method === 'editMessageText').length, 0)
+  assert.equal(f.answers.length, 0)
 })

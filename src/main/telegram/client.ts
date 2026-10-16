@@ -40,6 +40,7 @@ export class TelegramClient implements TelegramTransport {
         'getMe',
         'getWebhookInfo',
         'getUpdates',
+        'setMyCommands',
         'sendMessage',
         'editMessageText',
         'editMessageReplyMarkup',

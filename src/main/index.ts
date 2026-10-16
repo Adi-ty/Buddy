@@ -886,6 +886,7 @@ if (!app.requestSingleInstanceLock()) {
           decrypt: async (value) => (await safeStorage.decryptStringAsync(value)).result,
         }),
         requests: requestService,
+        trackingAvailable: () => snapshot.tracking.available,
         changed: () => {
           snapshot = { ...snapshot, telegram: telegram?.status() }
           broadcast()

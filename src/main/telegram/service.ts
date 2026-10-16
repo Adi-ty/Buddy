@@ -17,6 +17,7 @@ import {
 } from './client'
 import { turnMessage } from './messages'
 import { TelegramRequests } from './requests'
+import { TelegramStatusView } from './status'
 import type { TelegramData, TelegramPersistence } from './storage'
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -48,6 +49,7 @@ export class TelegramService {
   private generation = 0
   private challenge: { value: string; expiresAt: number } | null = null
   private requests: TelegramRequests | null = null
+  private navigation: TelegramStatusView | null = null
   private sessions: readonly SessionRecord[] = []
   private queue: Promise<unknown> = Promise.resolve()
   private queued = 0
@@ -64,6 +66,7 @@ export class TelegramService {
       changed: () => void
       client?: (token: string) => TelegramTransport
       sendInterval?: number
+      trackingAvailable?: () => boolean
     },
   ) {
     this.data = options.storage.load()
@@ -230,6 +233,31 @@ export class TelegramService {
   private installRequests(): void {
     if (!this.data.pair || this.requests) return
     const installedGeneration = this.generation
+    this.navigation = new TelegramStatusView({
+      chat: this.data.pair.chat,
+      botId: this.botId,
+      snapshot: () => ({
+        sessions: this.sessions,
+        available: this.options.trackingAvailable?.() ?? true,
+        paused: this.data.preferences.paused,
+      }),
+      send: (method, body, valid) => this.send(method, body, valid),
+    })
+    // The command menu is scoped to the paired private chat. It carries no
+    // session data, and failures must not prevent requests or polling.
+    void this.client
+      ?.call(
+        'setMyCommands',
+        {
+          scope: { type: 'chat', chat_id: this.data.pair.chat },
+          commands: [
+            { command: 'status', description: 'View your sessions' },
+            { command: 'help', description: 'Show commands' },
+          ],
+        },
+        this.controller.signal,
+      )
+      .catch(() => {})
     this.requests = new TelegramRequests({
       requests: this.options.requests,
       pair: this.data.pair,
@@ -353,19 +381,31 @@ export class TelegramService {
   private async update(update: Record<string, unknown>, generation: number): Promise<void> {
     const callback = update.callback_query
     if (record(callback)) {
+      const pair = this.data.pair
+      const authorized =
+        pair &&
+        record(callback.from) &&
+        callback.from.id === pair.user &&
+        callback.from.is_bot !== true
+      const navigation = typeof callback.data === 'string' && callback.data.startsWith('st:')
+      const notice =
+        authorized && navigation
+          ? (this.navigation?.callback(callback.data as string, callback.message) ??
+            (!this.navigation ? 'Send /status for a new view.' : undefined))
+          : undefined
       // Acknowledgment is neutral, and never waits behind message rate limits.
       if (typeof callback.id === 'string' && callback.id.length <= 256)
         void this.client
-          ?.call('answerCallbackQuery', { callback_query_id: callback.id }, this.controller.signal)
+          ?.call(
+            'answerCallbackQuery',
+            {
+              callback_query_id: callback.id,
+              ...(notice ? { text: notice } : {}),
+            },
+            this.controller.signal,
+          )
           .catch(() => {})
-      const pair = this.data.pair
-      if (
-        !pair ||
-        !record(callback.from) ||
-        callback.from.id !== pair.user ||
-        callback.from.is_bot === true
-      )
-        return
+      if (!authorized || navigation) return
       void this.requests?.callback(callback.data, callback.message).catch(() => {
         this.deliveryResult(true, generation)
       })
@@ -402,10 +442,7 @@ export class TelegramService {
       this.save()
       this.ready()
       this.installRequests()
-      void this.send('sendMessage', {
-        chat_id: message.chat.id,
-        text: 'Paired with Buddy. Your computer must stay awake, online and connected to the agent. Answer only after reviewing each request; the original agent interface remains available.',
-      }).catch(() => {})
+      this.navigation?.open('welcome')
       return
     }
     if (
@@ -414,7 +451,16 @@ export class TelegramService {
       message.from.id !== this.data.pair.user
     )
       return
-    this.requests?.reply(message)
+    // Replies belong to their question prompt, even if the answer is "/status".
+    if (message.reply_to_message) {
+      this.requests?.reply(message)
+      return
+    }
+    if (typeof message.text !== 'string') return
+    const command = /^\/(status|help|start)(?:@([a-zA-Z0-9_]+))?\s*$/i.exec(message.text)
+    if (!command || (command[2] && command[2].toLowerCase() !== this.username?.toLowerCase()))
+      return
+    this.navigation?.open(command[1]!.toLowerCase() === 'status' ? 'status' : 'help')
   }
   private send(
     method: string,
@@ -555,6 +601,8 @@ export class TelegramService {
     this.controller = new AbortController()
     this.requests?.dispose()
     this.requests = null
+    this.navigation?.dispose()
+    this.navigation = null
     this.challenge = null
     if (this.tick) clearInterval(this.tick)
     this.tick = null
