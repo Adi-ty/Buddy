@@ -178,9 +178,9 @@ async function fixture(t, options = {}) {
     button,
     saved: () => saved,
     credential: () => credential,
-    live: (value) => {
+    live: (value, sessions = []) => {
       live = value
-      service.reconcile([])
+      service.reconcile(sessions)
     },
   }
 }
@@ -308,7 +308,10 @@ test('permissions require exact paired user/chat/bot message; taps and updates c
   assert(Buffer.byteLength(b.callback_data) <= 64)
   assert(!b.callback_data.includes('request'))
   assert.equal(m.parse_mode, undefined)
-  assert.match(m.text, /<fixture> & \*literal\*/)
+  assert.equal(
+    m.text,
+    '🔐 Permission requested\n\nSession: Unavailable\nAgent: OpenCode\nProject: Unavailable\n\nTool: Bash\n\necho <fixture> & *literal*',
+  )
   await f.tap('Allow once', 789)
   await f.tap('Allow once', 456, (m) => ({ ...m, chat: { id: 789, type: 'private' } }))
   await f.tap('Allow once', 456, (m) => ({ ...m, from: { id: 789 } }))
@@ -383,6 +386,8 @@ test('multi-question drafts support single, multiple, boolean and reply-bound cu
   await f.tap('Type an answer…')
   await waitFor(() => [...f.transport.messages.values()].some((m) => m.reply_markup?.force_reply))
   const prompt = [...f.transport.messages.values()].find((m) => m.reply_markup?.force_reply)
+  assert.match(prompt.text, /^✏️ Your answer\n\nSession: Unavailable\nAgent: OpenCode/)
+  assert.match(prompt.text, /Question 4 of 4\nFree text\?/)
   f.push(f.message('arbitrary text'))
   f.push(f.message('wrong user', { reply_to_message: prompt }, 789))
   await new Promise((r) => setTimeout(r, 30))
@@ -532,7 +537,7 @@ test('notifications use confirmed terminal transitions and preserve parent conte
     turnActive: true,
     status: 'working',
   }
-  f.service.reconcile([{ id: 'parent', name: 'Parent' }, base])
+  f.service.reconcile([{ id: 'parent', name: 'Parent', harness: 'codex' }, base])
   f.service.observe(null, { ...base, status: 'completed' })
   f.service.observe(base, { ...base, status: 'error', turnActive: true })
   f.service.observe(base, { ...base, status: 'unknown', presence: 'stale' })
@@ -541,11 +546,95 @@ test('notifications use confirmed terminal transitions and preserve parent conte
   await waitFor(() =>
     [...f.transport.messages.values()].some((m) => m.text?.includes('turn failed')),
   )
-  assert.equal(
-    [...f.transport.messages.values()].filter((m) => m.text?.includes('Agent turn')).length,
-    2,
+  const alerts = [...f.transport.messages.values()].filter((m) => m.text?.includes('Subagent turn'))
+  assert.deepEqual(
+    alerts.map((m) => m.text),
+    [
+      '✅ Subagent turn finished\n\nSession: Parent\nSubagent: Child\nAgent: Codex\nProject: Repo',
+      '❌ Subagent turn failed\n\nSession: Parent\nSubagent: Child\nAgent: Codex\nProject: Repo',
+    ],
   )
-  assert([...f.transport.messages.values()].some((m) => m.text?.includes('Parent → Child')))
+})
+
+test('completion alerts identify the session and use display names for every harness', async (t) => {
+  const f = await fixture(t)
+  await f.pair()
+  for (const [harness, agent] of [
+    ['codex', 'Codex'],
+    ['claude-code', 'Claude Code'],
+    ['opencode', 'OpenCode'],
+  ]) {
+    const before = {
+      id: `${harness}:s`,
+      name: 'Build <Buddy> & *test*',
+      harness,
+      project: 'buddy',
+      presence: 'observed',
+      status: 'working',
+      turnActive: true,
+    }
+    f.service.observe(before, { ...before, status: 'completed', turnActive: false })
+    await waitFor(() =>
+      [...f.transport.messages.values()].some(
+        (m) =>
+          m.text ===
+          `✅ Turn finished\n\nSession: Build <Buddy> & *test*\nAgent: ${agent}\nProject: buddy`,
+      ),
+    )
+  }
+  assert([...f.transport.messages.values()].every((m) => m.parse_mode === undefined))
+})
+
+test('nested subagent requests show the root session and keep that context after answering', async (t) => {
+  const r = permission()
+  const f = await fixture(t)
+  await f.pair()
+  const root = { id: 'root', name: 'Build Buddy', harness: 'opencode', project: 'buddy' }
+  const parent = { ...root, id: 'parent', parentId: 'root', name: 'Review' }
+  const child = { ...root, id: r.sessionId, parentId: 'parent', name: 'Check tests' }
+  f.live([r], [root, parent, child])
+  await waitFor(() => f.button('Allow once'))
+  const context = 'Session: Build Buddy\nSubagent: Check tests\nAgent: OpenCode\nProject: buddy'
+  assert(f.button('Allow once').m.text.includes(context))
+  await f.tap('Allow once')
+  await waitFor(() => f.answers.length === 1)
+  f.requests.resolve(r.id, 'confirmed')
+  f.live([])
+  await waitFor(() =>
+    [...f.transport.messages.values()].some(
+      (m) =>
+        m.text?.startsWith('✅ Answered in Telegram') &&
+        m.text.includes(context) &&
+        m.reply_markup.inline_keyboard.length === 0,
+    ),
+  )
+})
+
+test('late session metadata updates the same alert and bounds labels without shortening the request', async (t) => {
+  const r = permission()
+  const f = await fixture(t, { live: [r] })
+  await f.pair()
+  await waitFor(() => f.button('Allow once'))
+  const original = f.button('Allow once').m.message_id
+  const session = {
+    id: r.sessionId,
+    harness: r.harness,
+    parentId: 'missing-parent',
+    name: 'x'.repeat(158) + '🤖' + 'y'.repeat(1000),
+    project: 'buddy\nrepo',
+  }
+  f.service.reconcile([session])
+  await waitFor(() => f.button('Allow once')?.m.text.includes('Subagent:'))
+  const updated = f.button('Allow once').m
+  assert.equal(updated.message_id, original)
+  assert(
+    updated.text.includes(
+      `Session: Unavailable\nSubagent: ${'x'.repeat(158)}…\nAgent: OpenCode\nProject: buddy repo`,
+    ),
+  )
+  assert(updated.text.endsWith(r.details))
+  assert(updated.text.isWellFormed())
+  assert(updated.text.length <= 4096)
 })
 
 test('invalid tokens and existing webhooks fail without starting polling or saving credentials', async (t) => {
@@ -881,7 +970,7 @@ test('unconfirmed pending requests keep the warning despite later successful sen
   f.transport.fail = null
   notifyCompletion(f)
   await waitFor(() =>
-    [...f.transport.messages.values()].some((m) => m.text?.includes('turn completed')),
+    [...f.transport.messages.values()].some((m) => m.text?.includes('Turn finished')),
   )
   f.push(f.message('healthy polling'))
   await waitFor(() => f.saved().offset > 1)
@@ -906,7 +995,7 @@ test('failed retirement edits remain visible until a confirmed repair, even when
   f.service.reconcile([]) // Must retain the failed retirement until it is repaired.
   notifyCompletion(f)
   await waitFor(() =>
-    [...f.transport.messages.values()].some((m) => m.text?.includes('turn completed')),
+    [...f.transport.messages.values()].some((m) => m.text?.includes('Turn finished')),
   )
   assert.equal(f.service.status().deliveryProblem, true)
   f.transport.fail = null
@@ -932,7 +1021,7 @@ test('failed persisted keyboard cleanup stays visible until that cleanup succeed
   await waitFor(() => f.service.status().deliveryProblem)
   notifyCompletion(f)
   await waitFor(() =>
-    [...f.transport.messages.values()].some((m) => m.text?.includes('turn completed')),
+    [...f.transport.messages.values()].some((m) => m.text?.includes('Turn finished')),
   )
   assert.equal(f.service.status().deliveryProblem, true)
   f.transport.fail = null
@@ -957,7 +1046,7 @@ test('disconnect and a fresh connection clear delivery warnings; late old failur
   const call = f.transport.call.bind(f.transport)
   let rejectOld
   f.transport.call = (method, body, signal) =>
-    method === 'sendMessage' && body.text.includes('turn completed')
+    method === 'sendMessage' && body.text.includes('Turn finished')
       ? new Promise((_resolve, reject) => {
           rejectOld = reject
         })
@@ -978,7 +1067,7 @@ test('late outgoing success from an old connection cannot erase a new delivery f
   const call = f.transport.call.bind(f.transport)
   let resolveOld
   f.transport.call = (method, body, signal) =>
-    method === 'sendMessage' && body.text.includes('turn completed')
+    method === 'sendMessage' && body.text.includes('Turn finished')
       ? new Promise((resolve) => {
           resolveOld = resolve
         })

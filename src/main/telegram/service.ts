@@ -15,7 +15,8 @@ import {
   TelegramCancelled,
   type TelegramTransport,
 } from './client'
-import { sessionTitle, TelegramRequests } from './requests'
+import { turnMessage } from './messages'
+import { TelegramRequests } from './requests'
 import type { TelegramData, TelegramPersistence } from './storage'
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -504,7 +505,7 @@ export class TelegramService {
       return
     void this.send('sendMessage', {
       chat_id: this.data.pair.chat,
-      text: `${sessionTitle(current, this.sessions)}\n\n${completed ? 'Agent turn completed.' : 'Agent turn failed.'}`,
+      text: turnMessage(current, this.sessions),
     }).catch(() => {}) // send() records delivery results for its own generation.
   }
   preferences(value: unknown): void {
