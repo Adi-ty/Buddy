@@ -350,12 +350,16 @@ export class TelegramRequests {
     } else if ('custom' in action) {
       const question = entry.question
       if (!live.questions[question]?.custom) return
+      const questionText = live.questions[question]!.text.slice(0, 3000).replace(
+        /[\uD800-\uDBFF]$/,
+        '',
+      )
       try {
         const prompt = await this.options.send(
           'sendMessage',
           {
             chat_id: this.options.pair.chat,
-            text: `✏️ Your answer\n\n${entry.title}\n\nQuestion ${question + 1} of ${live.questions.length}\n${live.questions[question]!.text.slice(0, 3000)}\n\nReply directly to this message.${live.questions[question]!.multiple ? ' This replaces your selections for this question.' : ''} Then use Submit all answers on the original message.`,
+            text: `✏️ Your answer\n\n${entry.title}\n\nQuestion ${question + 1} of ${live.questions.length}\n${questionText}\n\nReply directly to this message.${live.questions[question]!.multiple ? ' This replaces your selections for this question.' : ''} Then use Submit all answers on the original message.`,
             reply_markup: { force_reply: true, selective: true },
           },
           () => !!this.live(entry),

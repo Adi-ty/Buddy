@@ -411,6 +411,33 @@ test('multi-question drafts support single, multiple, boolean and reply-bound cu
   })
 })
 
+test('custom answer prompts do not split an emoji at the question preview boundary', async (t) => {
+  const questionText = 'a'.repeat(2999) + '🧑 suffix'
+  const question = {
+    ...permission(),
+    kind: 'question',
+    tool: null,
+    questions: [{ text: questionText, multiple: false, custom: true, options: [] }],
+  }
+  const f = await fixture(t, { live: [question] })
+  await f.pair()
+  await f.tap('Type an answer…')
+  await waitFor(() => [...f.transport.messages.values()].some((m) => m.reply_markup?.force_reply))
+  const prompt = [...f.transport.messages.values()].find((m) => m.reply_markup?.force_reply)
+  assert(prompt.text.isWellFormed())
+  assert(prompt.text.includes('a'.repeat(2999) + '\n\nReply directly'))
+  assert(prompt.text.length < 4096)
+  // Only the reply prompt has a preview; the original request stays complete.
+  assert([...f.transport.messages.values()].some((m) => m.text.includes(questionText)))
+  f.push(f.message('Confirmed', { reply_to_message: prompt }))
+  await waitFor(() =>
+    [...f.transport.messages.values()].some((m) => m.text.includes('Answer: Confirmed')),
+  )
+  await f.tap('Submit all answers')
+  await waitFor(() => f.answers.length === 1)
+  assert.deepEqual(f.answers[0].answer, { answers: [['Confirmed']] })
+})
+
 test('native retirement and known expiry invalidate old buttons even when edits fail', async (t) => {
   const f = await fixture(t, { live: [permission()] })
   await f.pair()
