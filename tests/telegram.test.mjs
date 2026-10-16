@@ -580,6 +580,21 @@ test('invalid tokens and existing webhooks fail without starting polling or savi
   }
 })
 
+test('a revoked token stops polling and tells the user how to replace it', async (t) => {
+  const f = await fixture(t)
+  await f.pair()
+  f.transport.fail = (method) => (method === 'getUpdates' ? new TelegramError(401) : null)
+  f.push(f.message('trigger next poll'))
+  await waitFor(() => f.service.status().state === 'error')
+  assert.equal(
+    f.service.status().message,
+    'Telegram rejected the bot token. Disconnect and enter the new token from BotFather.',
+  )
+  const count = f.transport.calls.length
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(f.transport.calls.length, count)
+})
+
 test('polling conflict stops work and reconnect explicitly resumes', async (t) => {
   const f = await fixture(t)
   await f.pair()

@@ -6,7 +6,7 @@ export class TelegramError extends Error {
   ) {
     super(
       code === 401
-        ? 'Telegram rejected the bot token.'
+        ? 'Telegram rejected the bot token. Disconnect and enter the new token from BotFather.'
         : code === 409
           ? 'Another poller or webhook is using this bot. Stop it, then reconnect.'
           : code === 429
