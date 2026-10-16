@@ -22,6 +22,7 @@ import { isHarnessId } from '../../shared/harnesses'
 import { validateResponse } from './request-response'
 import type { Observation } from './events'
 import { runTask } from '../tasks'
+import type { RequestOutcome } from '../request-service'
 
 const object = (p: unknown): p is Record<string, unknown> =>
   !!p && typeof p === 'object' && !Array.isArray(p)
@@ -73,6 +74,10 @@ export class RequestBridge {
       context: RequestContext,
       decision: 'allow' | 'reject' | 'native',
     ) => void,
+    private readonly lifecycle: (
+      id: string,
+      outcome: RequestOutcome | 'rejected',
+    ) => void = () => {},
   ) {
     this.socketPath = join(socketDirectory(profile), 'controls.sock')
     this.server = createServer((socket) => this.accept(socket))
@@ -132,11 +137,17 @@ export class RequestBridge {
       kind: p.view.kind,
     }
   }
-  private finish(id: string, decision: 'allow' | 'reject' | 'native', notify = true): void {
+  private finish(
+    id: string,
+    decision: 'allow' | 'reject' | 'native',
+    notify = true,
+    outcome: RequestOutcome = 'unavailable',
+  ): void {
     const p = this.pending.get(id)
     if (!p) return
     clearTimeout(p.timer)
     this.pending.delete(id)
+    this.lifecycle(id, outcome)
     runTask('Request resolution', () => this.resolved(this.context(p), decision))
     if (notify) this.send(p.owner, { op: 'retired', id: p.sourceId })
     runTask('Request publish', this.changed)
@@ -281,8 +292,24 @@ export class RequestBridge {
       const [id, p] = entry
       if (!p.response) return
       if (packet.ok === true)
-        this.finish(id, 'decision' in p.response ? p.response.decision : 'allow')
-      else {
+        this.finish(
+          id,
+          'decision' in p.response ? p.response.decision : 'allow',
+          true,
+          p.view.harness === 'opencode' &&
+            !('decision' in p.response && p.response.decision === 'native')
+            ? 'confirmed'
+            : 'unavailable',
+        )
+      else if (packet.uncertain === true) {
+        p.view = {
+          ...p.view,
+          submitting: true,
+          error: 'The response could not be confirmed. Check the agent before continuing.',
+        }
+        this.changed()
+      } else {
+        this.lifecycle(id, 'rejected')
         p.response = undefined
         p.view = {
           ...p.view,
@@ -323,7 +350,10 @@ export class RequestBridge {
       if (!existing.hook && packet.persistent !== true) {
         clearTimeout(existing.timer)
         existing.view = { ...existing.view, expiresAt: Date.now() + 70_000 }
-        existing.timer = setTimeout(() => this.finish(existing.view.id, 'native'), 70_000)
+        existing.timer = setTimeout(
+          () => this.finish(existing.view.id, 'native', true, 'expired'),
+          70_000,
+        )
       }
       return
     }
@@ -397,6 +427,7 @@ export class RequestBridge {
       questions,
       createdAt,
       expiresAt,
+      deadlineSource: 'buddy',
       submitting: false,
       error: null,
     }
@@ -416,7 +447,7 @@ export class RequestBridge {
       toolUseId: null,
       timer: setTimeout(() => {
         this.send(socket, { op: 'reply', id: packet.id, response: { decision: 'native' } })
-        this.finish(id, 'native')
+        this.finish(id, 'native', true, 'expired')
       }, lifetime),
     }
     try {

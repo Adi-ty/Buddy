@@ -1,7 +1,15 @@
 const assert = require('node:assert/strict')
 const { mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
 const { dirname, resolve, join } = require('node:path')
-const { app, dialog, nativeTheme, powerMonitor, screen } = require('electron')
+const {
+  app,
+  clipboard,
+  dialog,
+  nativeTheme,
+  powerMonitor,
+  screen,
+  safeStorage,
+} = require('electron')
 
 if (process.platform !== 'darwin') {
   console.error('The native smoke test requires macOS and a graphical login session.')
@@ -77,6 +85,7 @@ app.on('browser-window-created', (_event, window) => {
     if (details.level === 'error') errors.push(details.message)
   })
 })
+const telegramFixture = require('./telegram-smoke.cjs')(safeStorage)
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
 let pointer = { x: -10000, y: -10000 }
 app.once('ready', () => {
@@ -518,6 +527,219 @@ async function verify() {
     () => js(dashboard, 'document.body.textContent.includes("Integrations refreshed.")'),
     'refresh feedback',
   )
+  await waitForSelector(dashboard, 'section[aria-label="Telegram companion"]')
+  assert.equal((await snapshot(dashboard)).telegram.state, 'disconnected')
+  const telegramUI = 'section[aria-label="Telegram companion"]'
+  const captureTelegram = async (name) => {
+    if (!process.env.BUDDY_SMOKE_SCREENSHOTS) return
+    await js(
+      dashboard,
+      `document.querySelector(${JSON.stringify(telegramUI)}).scrollIntoView({ block: 'start' })`,
+    )
+    await wait(150)
+    writeFileSync(
+      join(artifacts, `telegram-${name}.png`),
+      (await dashboard.webContents.capturePage()).toPNG(),
+    )
+  }
+  assert.equal(
+    await js(dashboard, `document.querySelectorAll('${telegramUI} [role="switch"]').length`),
+    0,
+  )
+  await captureTelegram('setup')
+  await js(
+    dashboard,
+    `document.querySelector('input[type="password"]').value = ${JSON.stringify(telegramFixture.token)}`,
+  )
+  await click(dashboard, 'Connect bot')
+  await until(
+    async () => (await snapshot(dashboard)).telegram.state === 'pairing',
+    'Telegram bot validation',
+  )
+  assert.equal(
+    await js(dashboard, `document.querySelector('input[type="password"]')?.value ?? ""`),
+    '',
+  )
+  await waitForSelector(dashboard, 'input[aria-label="Telegram pairing link"]')
+  let pairingLink = await js(
+    dashboard,
+    `document.querySelector('input[aria-label="Telegram pairing link"]').value`,
+  )
+  await captureTelegram('pairing')
+  // Exercise expiry in the renderer without altering the main-process clock.
+  await js(
+    dashboard,
+    `window.smokeOriginalNow = Date.now; Date.now = () => window.smokeOriginalNow() + 301000; void 0`,
+  )
+  await until(
+    () =>
+      js(
+        dashboard,
+        `document.querySelector('${telegramUI}').textContent.includes('Link expired.')`,
+      ),
+    'expired pairing link feedback',
+  )
+  assert.equal(
+    await js(dashboard, `document.querySelector('input[aria-label="Telegram pairing link"]')`),
+    null,
+  )
+  await captureTelegram('expired')
+  await js(dashboard, `Date.now = window.smokeOriginalNow; delete window.smokeOriginalNow`)
+  await click(dashboard, 'Generate pairing link')
+  await waitForSelector(dashboard, 'input[aria-label="Telegram pairing link"]')
+  const replacedLink = await js(
+    dashboard,
+    `document.querySelector('input[aria-label="Telegram pairing link"]').value`,
+  )
+  assert.notEqual(replacedLink, pairingLink)
+  // Exercise the real preload/IPC path and browser permission policy. Stub only
+  // the final OS write so the user's actual clipboard stays unchanged.
+  const nativeWriteText = clipboard.writeText
+  let copiedLink = null
+  try {
+    clipboard.writeText = () => {
+      throw new Error('Smoke clipboard unavailable')
+    }
+    await click(dashboard, 'Copy link')
+    await until(
+      () =>
+        js(
+          dashboard,
+          `document.querySelector('${telegramUI}').textContent.includes('Couldn’t copy the link.')`,
+        ),
+      'clipboard failure feedback',
+    )
+    clipboard.writeText = (text) => {
+      copiedLink = text
+    }
+    await click(dashboard, 'Copy link')
+    await until(
+      () => js(dashboard, `document.querySelector('${telegramUI}').textContent.includes('Copied')`),
+      'native clipboard copy feedback',
+    )
+    assert.equal(copiedLink, replacedLink)
+    assert.equal(
+      await js(
+        dashboard,
+        `document.querySelector('${telegramUI}').textContent.includes('Couldn’t copy the link.')`,
+      ),
+      false,
+    )
+  } finally {
+    clipboard.writeText = nativeWriteText
+  }
+  // Revisiting setup must offer a fresh link, never resurrect one from storage.
+  await js(dashboard, `document.querySelector('a[href="/sessions"]').click()`)
+  await click(dashboard, 'Manage integrations')
+  await waitForSelector(dashboard, telegramUI)
+  await click(dashboard, 'Generate pairing link')
+  await waitForSelector(dashboard, 'input[aria-label="Telegram pairing link"]')
+  pairingLink = await js(
+    dashboard,
+    `document.querySelector('input[aria-label="Telegram pairing link"]').value`,
+  )
+  assert.notEqual(pairingLink, replacedLink)
+  telegramFixture.pair(pairingLink)
+  await until(
+    async () => (await snapshot(dashboard)).telegram.state === 'connected',
+    'Telegram private chat pairing',
+  )
+  assert.match((await snapshot(dashboard)).telegram.pairedUser, /456/)
+  telegramFixture.command('/status')
+  const statusMessage = () =>
+    [...telegramFixture.messages.values()].find((m) => m.text?.startsWith('Buddy · Session status'))
+  await until(() => statusMessage(), 'Telegram status from main session store')
+  assert(!statusMessage().text.includes('tracking is unavailable'))
+  assert((await snapshot(dashboard)).sessions.some((s) => statusMessage().text.includes(s.name)))
+  await until(
+    () => js(dashboard, `document.querySelectorAll('${telegramUI} [role="switch"]').length === 4`),
+    'paired notification settings',
+  )
+  assert.equal(
+    await js(dashboard, `document.querySelector('input[aria-label="Telegram pairing link"]')`),
+    null,
+  )
+  await captureTelegram('connected')
+  if (process.env.BUDDY_SMOKE_SCREENSHOTS) {
+    const bounds = dashboard.getBounds()
+    dashboard.setSize(860, 780)
+    nativeTheme.themeSource = 'light'
+    await until(
+      () => js(dashboard, `matchMedia('(prefers-color-scheme: light)').matches`),
+      'Telegram light theme',
+    )
+    await captureTelegram('connected-light-narrow')
+    assert(
+      await js(
+        dashboard,
+        `(() => { const card = document.querySelector('${telegramUI}'); return card.scrollWidth <= card.clientWidth })()`,
+      ),
+      'Telegram card fits the minimum window width',
+    )
+    dashboard.setBounds(bounds)
+    nativeTheme.themeSource = 'system'
+  }
+  await click(dashboard, 'Pause notifications')
+  await until(
+    () =>
+      js(
+        dashboard,
+        `document.querySelector('${telegramUI}').textContent.includes('New notifications are paused.')`,
+      ),
+    'pause feedback',
+  )
+  await captureTelegram('paused')
+  const beforeRefresh = statusMessage()
+  const refreshStatus = beforeRefresh.reply_markup.inline_keyboard
+    .flat()
+    .find((b) => b.text === 'Refresh')
+  telegramFixture.tap(beforeRefresh, refreshStatus.callback_data)
+  await until(
+    () => statusMessage().text.includes('New alerts paused'),
+    'Telegram status refresh in place',
+  )
+  assert.equal(statusMessage().message_id, beforeRefresh.message_id)
+  await click(dashboard, 'Resume notifications')
+  await until(
+    async () => !(await snapshot(dashboard)).telegram.preferences.paused,
+    'resume notifications',
+  )
+  await js(dashboard, `document.querySelector('${telegramUI} [role="switch"]').click()`)
+  await until(
+    async () => !(await snapshot(dashboard)).telegram.preferences.permissions,
+    'category toggle saves',
+  )
+  assert(!JSON.stringify(await snapshot(dashboard)).includes(telegramFixture.token))
+  assert(!readFileSync(join(profile, 'telegram.json'), 'utf8').includes(telegramFixture.token))
+  assert(!readFileSync(join(profile, 'telegram-token.enc'), 'utf8').includes(telegramFixture.token))
+  await js(
+    dashboard,
+    'window.buddy.setTelegramPreferences({ permissions: true, questions: true, completions: false, failures: false, paused: true })',
+  )
+  const originalError = console.error
+  console.error = (...args) => {
+    if (
+      String(args[0]).includes('buddy:telegram-') &&
+      args[1]?.message === 'Untrusted Buddy request'
+    )
+      return
+    originalError(...args)
+  }
+  try {
+    await assert.rejects(
+      overlay.webContents.executeJavaScript(
+        `window.buddy.copyTelegramPairingLink(${JSON.stringify(pairingLink)})`,
+      ),
+      /Untrusted Buddy request/,
+    )
+    await assert.rejects(
+      overlay.webContents.executeJavaScript('window.buddy.disconnectTelegram()'),
+      /Untrusted Buddy request/,
+    )
+  } finally {
+    console.error = originalError
+  }
+  assert.equal((await snapshot(dashboard)).telegram.state, 'connected')
   // Exercise the real preload/IPC/settings path with a controlled native file
   // picker. No developer installations or shell profiles are modified.
   const showOpenDialog = dialog.showOpenDialog
@@ -888,6 +1110,52 @@ async function verify() {
         'answer in native Codex clears the companion and dashboard',
       )
     }
+    if (harness.id === 'opencode') {
+      await js(
+        dashboard,
+        'window.buddy.setTelegramPreferences({ permissions: true, questions: true, completions: false, failures: false, paused: false })',
+      )
+      channel.send({
+        ...permission,
+        id: 'telegram-smoke-permission',
+        details: 'echo telegram smoke',
+      })
+      const remoteMessage = await until(
+        () =>
+          [...telegramFixture.messages.values()].find(
+            (message) =>
+              message.text?.includes('echo telegram smoke') &&
+              message.reply_markup?.inline_keyboard?.length,
+          ),
+        'Telegram pending permission',
+      )
+      const handle = remoteMessage.reply_markup.inline_keyboard
+        .flat()
+        .find((button) => button.text === 'Allow once').callback_data
+      telegramFixture.tap(remoteMessage, handle)
+      await until(
+        () => replies.some((reply) => reply.id === 'telegram-smoke-permission'),
+        'Telegram answer reaches owning integration',
+      )
+      assert.deepEqual(replies.find((reply) => reply.id === 'telegram-smoke-permission').response, {
+        decision: 'allow',
+      })
+      await until(
+        () =>
+          telegramFixture.messages
+            .get(remoteMessage.message_id)
+            ?.text.includes('Answered in Telegram'),
+        'Telegram confirmed resolution label',
+      )
+      telegramFixture.tap(remoteMessage, handle)
+      await wait(150)
+      assert.equal(replies.filter((reply) => reply.id === 'telegram-smoke-permission').length, 1)
+      await js(dashboard, 'window.buddy.disconnectTelegram()')
+      await until(
+        async () => (await snapshot(dashboard)).telegram.state === 'disconnected',
+        'Telegram disconnect',
+      )
+    }
     channel?.close()
     if (closeChannel) cleanups.splice(cleanups.indexOf(closeChannel), 1)
     await js(
@@ -947,7 +1215,11 @@ async function verify() {
     '[...document.querySelectorAll("summary")].find(item => item.textContent === "What Buddy tracks").click()',
   )
   await until(
-    () => js(dashboard, 'document.querySelector("details").open'),
+    () =>
+      js(
+        dashboard,
+        '[...document.querySelectorAll("summary")].find(item => item.textContent === "What Buddy tracks").parentElement.open',
+      ),
     'tracking disclosure opens',
   )
   await js(dashboard, `document.querySelector('a[href="/history"]').click()`)
@@ -1303,7 +1575,7 @@ async function verify() {
   await js(dashboard, 'window.buddy.removeIntegration("opencode")')
   assert.deepEqual(errors, [])
   console.log(
-    'PASS: native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested subagent navigation and native V2 form replies; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
+    'PASS: Telegram settings, authorization and mocked answer round trip; native companion titles; yellow/green/red boundaries; completion; approvals and questions; parent and nested subagent navigation and native V2 form replies; exact replies and attention clearing; dashboard navigation, filters, grouping, pagination, details, setup/removal, placement; dark/light rendering; empty-companion hiding',
   )
   // A final deferred write must survive normal Electron quit.
   await send('SessionStart', 'quit-flush')

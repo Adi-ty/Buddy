@@ -368,3 +368,18 @@ test(
     await waitFor(() => !bridge.snapshot().length)
   },
 )
+
+test('ambiguous OpenCode replies remain locked until native retirement', async (t) => {
+  const { bridge, client } = await fixture(t)
+  const source = await client('opencode')
+  source.send({ ...permission(), hook: false })
+  await waitFor(() => bridge.snapshot().length)
+  const { id } = bridge.snapshot()[0]
+  await bridge.respond(id, { decision: 'allow' })
+  source.send({ op: 'result', id: 'request-1', ok: false, uncertain: true })
+  await waitFor(() => bridge.snapshot()[0]?.error)
+  assert.equal(bridge.snapshot()[0].submitting, true)
+  await assert.rejects(bridge.respond(id, { decision: 'allow' }), /already/)
+  source.send({ op: 'resolved', id: 'request-1' })
+  await waitFor(() => !bridge.snapshot().length)
+})

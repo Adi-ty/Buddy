@@ -1,3 +1,4 @@
+import type { TelegramPairing, TelegramPreferences, TelegramStatus } from './telegram'
 import type { CompanionMove } from './companion'
 export const DASHBOARD_ROUTES = ['/sessions', '/history', '/integrations', '/settings'] as const
 export type DashboardRoute = (typeof DASHBOARD_ROUTES)[number]
@@ -118,6 +119,7 @@ export interface BuddySnapshot {
   harnesses: readonly HarnessCatalogEntry[]
   avatarPreviews: readonly AvatarPreview[]
   overlay: OverlayState
+  telegram?: TelegramStatus
   preferences?: { desktopNotifications: boolean; launchAtLogin: boolean; canLaunchAtLogin: boolean }
   runtime: {
     appVersion: string
@@ -149,6 +151,12 @@ export interface BuddyAPI {
   setIntegrationControls(harness: HarnessId, enabled: boolean): Promise<void>
   respondToRequest(id: string, response: AgentResponse): Promise<void>
   setOverlayInput(enabled: boolean): Promise<void>
+  connectTelegram(token: string): Promise<TelegramPairing | null>
+  pairTelegram(): Promise<TelegramPairing>
+  copyTelegramPairingLink(url: string): Promise<void>
+  disconnectTelegram(): Promise<void>
+  reconnectTelegram(): Promise<void>
+  setTelegramPreferences(preferences: TelegramPreferences): Promise<void>
 }
 
 export interface AgentQuestion {
@@ -168,6 +176,7 @@ export interface AgentRequest {
   questions: readonly AgentQuestion[]
   createdAt: number
   expiresAt: number
+  deadlineSource?: 'buddy' | 'harness'
   submitting: boolean
   error: string | null
   allowedDecisions?: readonly ('allow' | 'reject')[]
@@ -179,6 +188,12 @@ export type AgentResponse =
   | { answers: readonly (readonly string[])[] }
 
 export const IPC = {
+  telegramConnect: 'buddy:telegram-connect',
+  telegramPair: 'buddy:telegram-pair',
+  telegramCopyPairingLink: 'buddy:telegram-copy-pairing-link',
+  telegramDisconnect: 'buddy:telegram-disconnect',
+  telegramReconnect: 'buddy:telegram-reconnect',
+  telegramPreferences: 'buddy:telegram-preferences',
   snapshot: 'buddy:get-snapshot',
   navigate: 'buddy:navigate',
   navigationReady: 'buddy:navigation-ready',

@@ -247,6 +247,7 @@ export default Plugin.define({
         published.get(message.id) === entry &&
         requests.has(message.id)
       pendingReplies.add(message.id)
+      let dispatched = false
       try {
         await bounded(async (signal) => {
           const currentRequest =
@@ -268,6 +269,7 @@ export default Plugin.define({
             if (!['allow', 'reject'].includes(message.response?.decision))
               throw new Error('Invalid response')
             // V2.0.29 calls this input `decision`; `reply` is the emitted event field.
+            dispatched = true
             await ctx.permission.reply(
               {
                 sessionID: id,
@@ -280,6 +282,7 @@ export default Plugin.define({
             if (JSON.stringify(currentRequest.fields) !== JSON.stringify(request.fields))
               throw new Error('The form changed; answer it in OpenCode')
             const answer = formAnswer(currentRequest, message.response?.answers)
+            dispatched = true
             await apiJson(`${formPath(id, message.id)}/reply`, signal, { answer })
           }
           if (!stillPending(signal)) return
@@ -290,7 +293,7 @@ export default Plugin.define({
         }, 5000)
       } catch {
         if (published.get(message.id) === entry)
-          controlSend({ op: 'result', id: message.id, ok: false })
+          controlSend({ op: 'result', id: message.id, ok: false, uncertain: dispatched })
       } finally {
         pendingReplies.delete(message.id)
         scheduleReconcile()

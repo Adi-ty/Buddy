@@ -1,3 +1,4 @@
+import { TelegramSettings } from './telegram-settings'
 import { harnessFor, avatarFor } from '@/lib/harness'
 import { useState } from 'react'
 import { Check, LoaderCircle, Plug, RefreshCw, Trash2 } from 'lucide-react'
@@ -87,10 +88,7 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
   }
   return (
     <>
-      <PageHeading
-        title="Integrations"
-        subtitle="Connect your agents to keep their sessions in the companion."
-      >
+      <PageHeading title="Integrations" subtitle="Your agents and connected apps.">
         <Button
           variant="outline"
           size="sm"
@@ -115,6 +113,10 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
           <Notice className="mt-3" message={noticeScope === removing ? notice : null} />
         </ConfirmDialog>
       )}
+      <div className="mb-6">
+        <TelegramSettings status={snapshot.telegram} />
+      </div>
+      <h2 className="mb-3 text-xs font-medium text-muted-foreground">Coding agents</h2>
       <div className="space-y-3">
         {snapshot.harnesses.map((harness) => {
           const installed = harness.observer === 'installed'
@@ -334,8 +336,9 @@ export function IntegrationsPage({ snapshot }: { snapshot: BuddySnapshot }) {
         </p>
         <p className="mt-2">
           With companion replies enabled, pending tool arguments and structured questions are shown
-          locally in Buddy. They and your answers are kept in memory, then discarded when the
-          request ends.
+          in Buddy. If Telegram is connected and its category is enabled, these details also leave
+          this Mac for Telegram. Locally, they and your answers are kept in memory, then discarded
+          when the request ends.
         </p>
         <p className="mt-2">
           Observers run on this Mac. Desktop and IDE clients need to load the same hooks or plugin;

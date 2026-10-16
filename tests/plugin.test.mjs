@@ -476,7 +476,7 @@ test('changed forms are rejected before any mutation', async (t) => {
   assert(f.packets.some((p) => p.op === 'result' && p.ok === false))
 })
 
-test('reply timeout releases submitting state and never retries a mutation automatically', async (t) => {
+test('reply timeout reports an uncertain mutation and never retries automatically', async (t) => {
   const f = await fixture(t)
   f.state.permissions = [permission()]
   await f.control({ op: 'ready', enabled: true })
@@ -489,7 +489,7 @@ test('reply timeout releases submitting state and never retries a mutation autom
   }
   await f.control({ op: 'reply', id: 'permission-1', response: { decision: 'allow' } })
   await f.tick(5000)
-  assert(f.packets.some((p) => p.op === 'result' && !p.ok))
+  assert(f.packets.some((p) => p.op === 'result' && !p.ok && p.uncertain === true))
   assert.equal(count, 1)
   reply.resolve()
   await settle()
@@ -618,7 +618,7 @@ test('form mutations are single-attempt and require the same service owner at se
   })
   await f.control({ op: 'reply', id: 'form-1', response: { answers: [['Proceed']] } })
   assert.equal(attempts, 1)
-  assert(f.packets.some((p) => p.op === 'result' && !p.ok))
+  assert(f.packets.some((p) => p.op === 'result' && !p.ok && p.uncertain === true))
   f.handlers.set('/api/session/session-1/form/form-1', () => {
     writeFileSync(
       f.registration,
